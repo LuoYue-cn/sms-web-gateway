@@ -1,0 +1,26 @@
+.env
+server/data/
+/data/
+web/node_modules/
+web/dist/
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+*.iml
+dist/*.apk
+dist/*.zip
+__pycache__/
+
+# 本地与系统文件
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+.idea/
+.vscode/
+
+# 构建产物走 GitHub Releases，不进仓库
+dist/
+android/app/src/main/assets/root-module.zip

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- release / 默认：禁止明文 HTTP，仅信任系统证书，HTTPS 证书错误一律失败（客户端代码中没有任何忽略 TLS 错误的逻辑）。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

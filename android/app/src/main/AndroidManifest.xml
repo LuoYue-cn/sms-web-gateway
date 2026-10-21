@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 网络 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 短信 / SIM / 联系人（运行时授权，被拒绝时界面会明确提示） -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!-- 前台服务 / 通知 / 开机 / 电池优化 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 仅用于扫描绑定二维码 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+
+    <!-- Android 11+ 包可见性：仅用于识别 Root 管理器是否安装 -->
+    <queries>
+        <package android:name="com.rifsxd.ksunext" />
+        <package android:name="me.weishu.kernelsu" />
+        <package android:name="com.topjohnwu.magisk" />
+        <package android:name="me.bmax.apatch" />
+    </queries>
+
+    <application
+        android:name=".App"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SmsGate">
+
+        <!-- WorkManager 按需初始化（App 实现 Configuration.Provider）：开机未解锁时不提前触碰 CE 存储 -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          前台服务类型：specialUse。长轮询 + 心跳不属于 dataSync 等预定义类型；dataSync 在 Android 15 有 6 小时超时。
+          服务内实现了 onTimeout，超时则退化为 WorkManager 周期同步。
+        -->
+        <service
+            android:name=".service.GatewayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="@string/fgs_special_use_subtype" />
+        </service>
+
+        <!-- 实时短信：仅系统（BROADCAST_SMS）可以发送；receiver 内不做网络 -->
+        <receiver
+            android:name=".sms.SmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="100">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- SmsManager 的 sent / delivery 回调，只接受显式 PendingIntent -->
+        <receiver
+            android:name=".sms.SmsResultReceiver"
+            android:exported="false" />
+
+        <!-- 开机：LOCKED_BOOT_COMPLETED 时不访问 CE 存储 -->
+        <receiver
+            android:name=".keepalive.BootReceiver"
+            android:directBootAware="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Root Watchdog 恢复入口。exported=false：系统只允许 root(uid 0)/system 与本应用自己向它发送显式广播，
+          其他应用和 adb shell(uid 2000) 会被系统拒绝（Permission Denial）。这是系统强制的门禁；
+          sentFromUid 在发送方不带 share-identity 选项时恒为 -1，不能用来做校验。
+        -->
+        <receiver
+            android:name=".keepalive.RecoverReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.smswebgateway.android.action.WATCHDOG_RECOVER" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

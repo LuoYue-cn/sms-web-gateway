@@ -1,0 +1,6 @@
+id=smsgate_watchdog
+name=SMS Web Gateway Watchdog
+version=v1.0.0
+versionCode=1
+author=SMS Web Gateway
+description=Optional root watchdog for SMS Web Gateway. Checks the app's local heartbeat and sends a bounded, cooldown-protected recovery broadcast. No network access, no system changes.

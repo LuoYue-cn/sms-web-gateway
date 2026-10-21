@@ -1,0 +1,39 @@
+services:
+  php:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      target: php
+    image: sms-web-gateway-php
+    restart: unless-stopped
+    environment:
+      SMSGATE_DATA_DIR: /var/lib/smsgate
+      SMSGATE_TRUST_PROXY: "1"
+      SMSGATE_PUBLIC_URL: ${PUBLIC_URL:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - smsgate_data:/var/lib/smsgate
+
+  nginx:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+      target: nginx
+    image: sms-web-gateway-nginx
+    restart: unless-stopped
+    depends_on:
+      - php
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/api/v1/install/status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  smsgate_data:
+    name: smsgate_data

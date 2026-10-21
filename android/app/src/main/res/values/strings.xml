@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">短信网关</string>
+    <string name="fgs_special_use_subtype">持续连接自托管短信网关服务器：长轮询接收发送任务、上传新短信并定时发送心跳。该用途无法使用 dataSync（有 6 小时超时）或其他预定义前台服务类型。</string>
+</resources>

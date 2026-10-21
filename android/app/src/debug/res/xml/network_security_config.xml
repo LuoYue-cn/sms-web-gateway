@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  仅 debug 变体：允许明文 HTTP，用于 adb reverse 后访问 http://127.0.0.1:8080 以及局域网测试。
+  networkSecurityConfig 无法表达 CIDR 网段，所以这里在 debug 下整体放开 cleartext；
+  应用层的 ServerUrl 校验仍然只允许 http 指向 localhost / 回环 / 私有网段（release 完全禁止 http）。
+  HTTPS 仍然完整校验证书。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
