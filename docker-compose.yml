@@ -9,6 +9,8 @@ services:
     environment:
       SMSGATE_DATA_DIR: /var/lib/smsgate
       SMSGATE_TRUST_PROXY: "1"
+      # 只有来自这些地址的 X-Forwarded-* 才会被采信（容器网络 + 常见内网段）。若 Nginx 之外还有一层反代，把它的地址加进来。
+      SMSGATE_TRUSTED_PROXIES: ${TRUSTED_PROXIES:-127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
       SMSGATE_PUBLIC_URL: ${PUBLIC_URL:-}
       TZ: ${TZ:-UTC}
     volumes:

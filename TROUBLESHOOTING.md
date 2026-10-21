@@ -6,12 +6,14 @@
 |---|---|
 | 访问 `/install` 环境检测有红项 | 按提示修复：数据目录需对 PHP 用户可写（Docker 下为命名卷，无需处理）；缺 `pdo_sqlite`/`mbstring` 时重建 php 镜像 |
 | 网页提示「系统尚未安装」/ API 返回 `not_installed` | 先完成 `/install`；若数据卷被清空，需重新安装 |
+| 安装向导提示「数据目录可被网页直接读取」 | Web 服务器把 `data/` 当成了静态目录（宝塔「运行目录」没设成 `/public`）。把运行目录改为 `/public` 后重新检测；这是为了防止 SQLite 数据库被直接下载 |
 | 想重新安装 | 只能在服务器执行 `docker compose exec php php bin/reset.php --yes`（先自动备份旧库） |
-| 登录提示「失败次数过多」 | 同一用户名+IP 15 分钟内失败 5 次会锁定，等待提示的秒数；锁定记录保存在 `login_attempts` 表 |
+| 登录提示「失败次数过多」 | 两层限流：同一「用户名 + 来源 IP」15 分钟内失败 5 次，或同一用户名在所有来源合计失败 20 次，都会锁定，等待提示的秒数即可；记录保存在 `login_attempts` 表。若是你自己输错且在反向代理后面，所有人被看成同一来源，请按 [DEPLOYMENT.md 4.1](DEPLOYMENT.md#41-真实客户端-ip-与登录限流) 配置 `TRUSTED_PROXIES` |
 | 登录后马上又回到登录页 | 反向代理没传 `X-Forwarded-Proto: https`，导致 Cookie 的 Secure 标记与实际协议不符；或浏览器阻止了 Cookie |
-| 网页不实时更新 | 查看右下角连接状态；反向代理需关闭缓冲（`proxy_buffering off`）并把 `proxy_read_timeout` 设为 ≥ 90s；SSE 不可用时前端自动 5 秒轮询 |
+| 网页不实时更新 | 查看右下角连接状态；SSE 不可用时前端自动退化为 5 秒轮询（功能不丢，只是不实时）。宝塔 / 直接 Nginx 不需要额外配置；**只有在它前面还有另一层代理 / CDN 时**，那一层需要关闭对 `/api/v1/events` 的缓冲（`proxy_buffering off;`、`proxy_read_timeout 90s;`），详见 [DEPLOYMENT.md 4.2](DEPLOYMENT.md#42-实时推送sse与反向代理缓冲) |
 | 设备数一多就卡 | 每个长轮询/SSE 连接占一个 PHP-FPM worker，调大 `docker/php/zz-smsgate.conf` 的 `pm.max_children` |
-| 返回 `database_busy`（503） | SQLite 写锁等待超过 8 秒，通常是备份/大批量同步同时进行；稍后重试，设备端会自动重试 |
+| 返回 `database_busy`（503） | SQLite 写锁等待超过 8 秒，通常是备份/大批量同步同时进行；稍后重试，设备端会自动重试。已开启 WAL，常规规模（十几台设备、几万条）压测没有出现过 |
+| `data/` 里 `-wal` 文件很大 | 大批量同步期间 WAL 暂时变大（实测 12 万条并发灌入约 950 MB），检查点完成后会被截断到 64 MB，空闲时为 0；磁盘小的话预留几百 MB |
 | 容器重建后数据还在吗 | 在命名卷 `smsgate_data` 中，`docker compose down -v` 才会删除它 |
 
 ## 设备绑定与同步
@@ -19,7 +21,7 @@
 | 现象 | 处理 |
 |---|---|
 | 绑定提示令牌无效 | 令牌 5 分钟过期且只能用一次；重新点「添加设备」生成新的 |
-| 绑定后 APK 提示证书错误 | release 构建不接受自签名/不受信任证书，也不会忽略 TLS 错误。使用受信任的证书（Let's Encrypt），或仅在 debug 构建里连接明文/局域网地址做测试 |
+| 绑定后 APK 提示证书错误 | release 包只信任系统 CA，不接受自签证书，也**没有**忽略 TLS 错误的选项。内网自签 / 私有 CA 的几种做法见 [ANDROID_SETUP.md「内网 / 自签证书」](ANDROID_SETUP.md#6-内网--自签证书怎么办)：推荐用 Let's Encrypt DNS-01 给内网域名签正规证书；或用 debug 包并把自己的 CA 装到手机上 |
 | 手机显示「设备已被移除」 | 网页端删除了该设备（令牌被吊销）。在手机上重新绑定 |
 | 历史短信没有同步 | 检查 `READ_SMS` 是否授予（应用内会明确提示）；查看主页同步状态与错误；断网后会自动续传 |
 | 同步到一半停止 | 前台服务被系统回收或 6 小时超时（Android 15 `dataSync` 限制，本项目使用 `specialUse` 并带超时降级）；WorkManager 会周期补偿，界面会提示「同步延迟」。检查电池优化白名单 |

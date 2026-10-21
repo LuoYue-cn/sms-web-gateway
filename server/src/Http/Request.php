@@ -27,7 +27,8 @@ final class Request
     ) {
     }
 
-    public static function fromGlobals(bool $trustProxy): self
+    /** @param list<string> $trustedProxies */
+    public static function fromGlobals(bool $trustProxy, array $trustedProxies = []): self
     {
         $uri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
         $path = rawurldecode((string) parse_url($uri, PHP_URL_PATH));
@@ -42,10 +43,20 @@ final class Request
         }
         $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
         $secure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
-        if ($trustProxy) {
+        if ($trustProxy && self::inList($ip, $trustedProxies)) {
+            // 自右向左跳过可信反代，第一个不可信地址才是真实客户端。最左侧的值是客户端自己填的，不能信。
             $xff = $headers['x-forwarded-for'] ?? '';
             if ($xff !== '') {
-                $ip = trim(explode(',', $xff)[0]);
+                $hops = array_reverse(array_map('trim', explode(',', $xff)));
+                foreach ($hops as $hop) {
+                    if (filter_var($hop, FILTER_VALIDATE_IP) === false) {
+                        break;
+                    }
+                    $ip = $hop;
+                    if (!self::inList($hop, $trustedProxies)) {
+                        break;
+                    }
+                }
             }
             if (($headers['x-forwarded-proto'] ?? '') === 'https') {
                 $secure = true;
@@ -53,6 +64,33 @@ final class Request
         }
         $body = (string) file_get_contents('php://input');
         return new self(strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')), $path, $_GET, $headers, $body, $ip, $secure);
+    }
+
+    /** @param list<string> $list IP 或 CIDR */
+    public static function inList(string $ip, array $list): bool
+    {
+        if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return false;
+        }
+        $bin = inet_pton($ip);
+        foreach ($list as $entry) {
+            [$net, $bits] = array_pad(explode('/', $entry, 2), 2, null);
+            $nb = filter_var($net, FILTER_VALIDATE_IP) === false ? false : inet_pton($net);
+            if ($nb === false || strlen($nb) !== strlen($bin)) {
+                continue;
+            }
+            $max = strlen($nb) * 8;
+            $n = $bits === null ? $max : max(0, min($max, (int) $bits));
+            $full = intdiv($n, 8);
+            if ($full > 0 && substr($bin, 0, $full) !== substr($nb, 0, $full)) {
+                continue;
+            }
+            $rem = $n % 8;
+            if ($rem === 0 || ((ord($bin[$full]) ^ ord($nb[$full])) & (0xFF << (8 - $rem)) & 0xFF) === 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public function header(string $name): string

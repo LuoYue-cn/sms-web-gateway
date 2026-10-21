@@ -24,8 +24,39 @@ final class InstallService
         return is_file($this->config->lockPath());
     }
 
+    /**
+     * 数据目录能否被网页直接读取。往 data/ 写一个探针文件，再用 HTTP 请求它：
+     * 能读到内容说明 Web 服务器把 data/ 当静态目录公开了（SQLite 数据库就能被下载）。
+     *
+     * @return array{ok:bool,detail:string}
+     */
+    public function dataExposure(?string $host, bool $https): array
+    {
+        if ($host === null || $host === '' || !is_dir($this->config->dataDir) || !is_writable($this->config->dataDir)) {
+            return ['ok' => true, 'detail' => '无法检测（跳过）'];
+        }
+        $name = 'probe-' . bin2hex(random_bytes(6)) . '.txt';
+        $path = $this->config->dataDir . '/' . $name;
+        $token = bin2hex(random_bytes(8));
+        if (@file_put_contents($path, $token) === false) {
+            return ['ok' => true, 'detail' => '无法检测（跳过）'];
+        }
+        try {
+            $ctx = stream_context_create(['http' => ['timeout' => 3, 'ignore_errors' => true, 'follow_location' => 0], 'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]]);
+            // 运行目录设为站点根时，数据目录会出现在 /data/ 下；运行目录为 /public 时它不在网站目录里，请求只会回落到前端首页。
+            $url = ($https ? 'https://' : 'http://') . $host . '/data/' . $name;
+            $body = @file_get_contents($url, false, $ctx);
+            $found = is_string($body) && str_contains($body, $token);
+        } finally {
+            @unlink($path);
+        }
+        return $found
+            ? ['ok' => false, 'detail' => '数据目录可被网页直接读取！数据库会泄露。请把站点「运行目录」设为 /public，或为 /data 添加拒绝规则']
+            : ['ok' => true, 'detail' => '数据目录无法从网页访问'];
+    }
+
     /** @return list<array{key:string,label:string,ok:bool,detail:string}> */
-    public function checks(): array
+    public function checks(?string $host = null, bool $https = false): array
     {
         $dataDir = $this->config->dataDir;
         $writable = (is_dir($dataDir) && is_writable($dataDir)) || (!is_dir($dataDir) && is_writable(dirname($dataDir)));
@@ -37,6 +68,7 @@ final class InstallService
             ['key' => 'openssl', 'label' => 'OpenSSL 可用', 'ok' => extension_loaded('openssl') || function_exists('random_bytes'), 'detail' => extension_loaded('openssl') ? OPENSSL_VERSION_TEXT : '使用 random_bytes'],
             ['key' => 'session', 'label' => 'Session 正常', 'ok' => $sessOk, 'detail' => $this->config->sessionPath()],
             ['key' => 'mbstring', 'label' => 'mbstring 扩展', 'ok' => extension_loaded('mbstring'), 'detail' => extension_loaded('mbstring') ? '已加载' : '缺失'],
+            ['key' => 'data_exposure', 'label' => '数据目录不可被网页读取'] + $this->dataExposure($host, $https),
             ['key' => 'migrations', 'label' => '迁移文件存在', 'ok' => glob($this->config->migrationsDir . '/*.sql') !== [] && glob($this->config->migrationsDir . '/*.sql') !== false, 'detail' => $this->config->migrationsDir],
         ];
     }
@@ -44,7 +76,7 @@ final class InstallService
     /**
      * @param array<string,mixed> $body
      */
-    public function install(array $body): void
+    public function install(array $body, ?string $host = null, bool $https = false): void
     {
         if ($this->isInstalled()) {
             throw new ApiException(409, 'already_installed', '系统已安装');
@@ -62,8 +94,8 @@ final class InstallService
         if (!in_array($tz, \DateTimeZone::listIdentifiers(), true) && $tz !== 'UTC') {
             throw ApiException::invalid(['timezone' => '无效的时区']);
         }
-        foreach ($this->checks() as $c) {
-            if (!$c['ok'] && in_array($c['key'], ['php', 'pdo_sqlite', 'data_dir', 'migrations'], true)) {
+        foreach ($this->checks($host, $https) as $c) {
+            if (!$c['ok'] && in_array($c['key'], ['php', 'pdo_sqlite', 'data_dir', 'migrations', 'data_exposure'], true)) {
                 throw new ApiException(400, 'environment_check_failed', '环境检测未通过: ' . $c['label']);
             }
         }

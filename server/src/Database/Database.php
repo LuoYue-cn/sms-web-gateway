@@ -31,6 +31,10 @@ final class Database
             $this->pdo->exec('PRAGMA journal_mode = WAL');
         }
         $this->pdo->exec('PRAGMA synchronous = NORMAL');
+        if ($path !== ':memory:') {
+            // 大批量并发同步时 WAL 可能暂时涨到数百 MB（检查点追不上）；该上限让它在检查点完成后回落。
+            $this->pdo->exec('PRAGMA journal_size_limit = 67108864');
+        }
     }
 
     public function pdo(): PDO

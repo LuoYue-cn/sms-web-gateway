@@ -4,11 +4,16 @@
   networkSecurityConfig 无法表达 CIDR 网段，所以这里在 debug 下整体放开 cleartext；
   应用层的 ServerUrl 校验仍然只允许 http 指向 localhost / 回环 / 私有网段（release 完全禁止 http）。
   HTTPS 仍然完整校验证书。
+
+  调试版额外信任「用户安装的 CA」：内网自签证书 / 私有 CA 的做法是把你的 CA 证书装到手机
+  （设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书），然后用 debug 包连接。
+  release 包刻意不信任用户 CA（只信任系统 CA），避免被恶意装入的 CA 劫持。
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
+            <certificates src="user" />
         </trust-anchors>
     </base-config>
 </network-security-config>

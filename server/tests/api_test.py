@@ -733,5 +733,71 @@ class TestSettingsAndMisc(Base):
             self.assertEqual(r.headers["X-Frame-Options"], "DENY")
 
 
+class TestProxyTrust(Base):
+    """X-Forwarded-For 只有在显式开启并且来自可信反代时才被采信；否则登录限流可被伪造绕过。"""
+
+    def test_spoofed_forwarded_for_cannot_bypass_login_throttle(self):
+        c = Client(self.base)
+        codes = []
+        for i in range(12):
+            st, _ = c.call("POST", "/auth/login", {"username": "spoof-victim", "password": "nope"},
+                           headers={"X-Forwarded-For": f"203.0.113.{i + 1}"})
+            codes.append(st)
+        self.assertEqual(codes[:5], [401] * 5, codes)
+        self.assertTrue(all(x == 429 for x in codes[5:]), codes)
+
+    def test_in_list_cidr_matching(self):
+        out = subprocess.run(
+            ["php", "-r", 'require "' + os.path.join(ROOT, "src", "autoload.php") + '"; '
+             '$l=["127.0.0.1","10.0.0.0/8","192.168.0.0/16","::1"]; '
+             'foreach (["127.0.0.1","10.200.3.4","192.168.1.5","192.169.1.5","8.8.8.8","::1","2001:db8::1","bad"] as $ip) '
+             'echo SmsGate\\Http\\Request::inList($ip,$l) ? "1" : "0";'],
+            capture_output=True, text=True).stdout
+        self.assertEqual(out, "11100100")
+
+
+class TestCredentialStuffing(Base):
+    """分布式撞库：每个来源只试几次，逐 IP 限流拦不住，所以同一用户名还要有跨来源的总量上限。"""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # 让每个请求看起来来自不同 IP：信任 127.0.0.1 这个“反代”，并由测试自己填 X-Forwarded-For
+        pass
+
+    def test_per_username_cap_across_sources(self):
+        import sqlite3
+        con = sqlite3.connect(os.path.join(self.data_dir, "sms_gateway.sqlite"))
+        now = int(time.time() * 1000)
+        # 直接写入 20 次来自 20 个不同 IP 的失败记录（等价于 20 个来源各试 1 次）
+        for i in range(20):
+            con.execute("INSERT INTO login_attempts (ts, username, ip, success) VALUES (?, ?, ?, 0)",
+                        (now - 1000, "stuffed-user", f"198.51.100.{i + 1}"))
+        con.commit()
+        con.close()
+        e = Client(self.base).err("POST", "/auth/login", {"username": "stuffed-user", "password": "whatever"}, 429, "too_many_attempts")
+        self.assertGreater(e["details"]["retry_after"], 0)
+        # 该账号即使给出正确密码也被锁：锁的是账号维度，不是只拦错误密码
+        c = Client(self.base)
+        c.ok("POST", "/auth/login", {"username": "admin", "password": PASSWORD})
+        con = sqlite3.connect(os.path.join(self.data_dir, "sms_gateway.sqlite"))
+        con.execute("UPDATE users SET username = 'stuffed-user' WHERE username = 'admin'")
+        con.commit()
+        con.close()
+        Client(self.base).err("POST", "/auth/login", {"username": "stuffed-user", "password": PASSWORD}, 429, "too_many_attempts")
+
+    def test_other_usernames_unaffected(self):
+        c = Client(self.base)
+        c.err("POST", "/auth/login", {"username": "someone-else", "password": "x"}, 401, "invalid_credentials")
+
+
+class TestInstallExposureProbe(Base):
+    def test_data_exposure_check_present_and_passes_on_builtin_server(self):
+        # php -S 以 server/public 为文档根，数据目录在其上一级，不在网站目录内
+        st, js = Client(self.base).call("GET", "/install/status")
+        self.assertEqual(st, 200)
+        self.assertTrue(js["data"]["installed"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

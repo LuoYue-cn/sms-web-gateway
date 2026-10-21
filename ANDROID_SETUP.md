@@ -117,7 +117,30 @@ adb shell pm grant com.smswebgateway.android android.permission.POST_NOTIFICATIO
 
 ---
 
-## 6. 定制 ROM 注意事项（HyperOS / MIUI / ColorOS / OriginOS 等）
+## 6. 内网 / 自签证书怎么办
+
+release 包**只信任系统自带的 CA**，不信任你自己装到手机上的证书，也没有「忽略证书错误」的选项。这是刻意的：短信里有验证码，如果允许用户 CA，任何能让你装上一张 CA 的人（钓鱼、恶意描述文件）都能中间人你的短信流量。
+
+如果你的服务器只在内网、用的是自签证书或私有 CA，有下面几种办法，**按推荐程度排序**：
+
+| 做法 | 说明 |
+|---|---|
+| **① 用公共可信证书（推荐）** | 给内网服务起一个你自己的域名，用 Let's Encrypt 的 **DNS-01 验证**签发证书（不需要服务器对公网开放 80/443），内网 DNS 或手机 hosts 把域名解析到内网 IP 即可。release 包直接可用，不需要任何额外设置 |
+| **② 反向代理 + 公网域名** | 把服务放在有正规证书的反向代理后面（Caddy / Nginx / 宝塔自带的证书申请） |
+| **③ 用 debug 包 + 安装自己的 CA（内网自用）** | debug 包额外信任「用户安装的 CA」。步骤：见下 |
+| **④ VPN 内用 HTTP** | debug 包允许 `http://` 指向内网地址（`10.x`、`172.16–31.x`、`192.168.x`、`*.local`、`localhost`）。仅限你完全信任的内网 / VPN，且不要用于公网 |
+
+**③ 的步骤（debug 包 + 私有 CA）**
+
+1. 用 `openssl` 或 `mkcert` 生成一个私有 CA，并用它给你的服务器签一张证书（证书的 SAN 必须包含你在手机里填的主机名或 IP）。
+2. 把 **CA 证书**（不是服务器证书）拷到手机，Android：设置 → 安全 → 加密与凭据 → 安装证书 → **CA 证书**，按提示安装（需要已设置锁屏）。
+3. 安装 `smsgate-debug.apk`，服务器地址填 `https://你的内网域名或IP:端口`，照常绑定。
+4. 证书错误时连接会直接失败并提示原因，**不会**静默放行。
+
+> 注意：③ 的安全性取决于你对那张 CA 的保管。CA 私钥泄露等于允许别人伪造你的服务器。不要把同一张 CA 装到你日常使用的手机上；备用机专用即可。
+> 不想用 debug 包的话，可以自己从源码构建 release 并在 `android/app/src/main/res/xml/network_security_config.xml` 里增加 `<certificates src="user" />` 或用证书固定指向你自己的 CA，然后用自己的签名密钥签名。
+
+## 7. 定制 ROM 注意事项（HyperOS / MIUI / ColorOS / OriginOS 等）
 
 如果你的备用机运行的是厂商定制系统，系统的省电管理通常比原生 Android 更加严苛，建议配置：
 
@@ -128,7 +151,7 @@ adb shell pm grant com.smswebgateway.android android.permission.POST_NOTIFICATIO
 
 ---
 
-## 7. 设备解绑与数据清理
+## 8. 设备解绑与数据清理
 
 如需将备用机切换到其他服务器或停用：
 1. 打开 App 进入「设置」页面，滑到底部。

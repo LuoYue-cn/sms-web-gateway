@@ -16,6 +16,8 @@ use SmsGate\Support\Id;
 final class AuthService
 {
     public const MAX_FAILURES = 5;
+    /** 同一用户名在所有来源合计的失败上限。分布式撞库时每个 IP 只试几次，逐 IP 限流拦不住。 */
+    public const MAX_FAILURES_PER_USER = 20;
     public const FAILURE_WINDOW_MS = 900_000;
     public const SESSION_IDLE_MS = 12 * 3600_000;
     public const SESSION_ABSOLUTE_MS = 7 * 86400_000;
@@ -107,6 +109,19 @@ final class AuthService
             $retry = max(1, (int) ceil(($oldest + self::FAILURE_WINDOW_MS - $now) / 1000));
             throw new ApiException(429, 'too_many_attempts', '登录失败次数过多，请稍后再试', ['retry_after' => $retry]);
         }
+        $userFails = (int) $this->db->value(
+            'SELECT COUNT(*) FROM login_attempts WHERE username = ? AND success = 0 AND ts > ?',
+            [$key, $now - self::FAILURE_WINDOW_MS]
+        );
+        if ($userFails >= self::MAX_FAILURES_PER_USER) {
+            $oldest = (int) $this->db->value(
+                'SELECT MIN(ts) FROM login_attempts WHERE username = ? AND success = 0 AND ts > ?',
+                [$key, $now - self::FAILURE_WINDOW_MS]
+            );
+            $retry = max(1, (int) ceil(($oldest + self::FAILURE_WINDOW_MS - $now) / 1000));
+            $this->audit->log('admin', $username, 'login_locked', null, '', 'too many failures across sources', $req->ip);
+            throw new ApiException(429, 'too_many_attempts', '该账号登录失败次数过多，请稍后再试', ['retry_after' => $retry]);
+        }
         $user = $this->users->byUsername($username);
         // Always run a hash comparison so response time does not reveal whether the user exists.
         $hash = $user['password_hash'] ?? '$2y$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234';
@@ -117,6 +132,7 @@ final class AuthService
             throw new ApiException(401, 'invalid_credentials', '用户名或密码错误');
         }
         $this->db->exec('DELETE FROM login_attempts WHERE username = ? AND ip = ?', [$key, $req->ip]);
+        $this->db->exec('DELETE FROM login_attempts WHERE ts < ?', [$now - 86400_000]);
         if (password_needs_rehash($user['password_hash'], PASSWORD_DEFAULT)) {
             $this->users->setPassword((int) $user['id'], password_hash($password, PASSWORD_DEFAULT));
             $user = $this->users->byId((int) $user['id']) ?? $user;

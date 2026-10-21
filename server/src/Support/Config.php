@@ -11,6 +11,8 @@ final class Config
         public readonly string $migrationsDir,
         public readonly string $webRoot,
         public readonly bool $trustProxy,
+        /** @var list<string> 可信反向代理地址（IP 或 CIDR）。只有来自这些地址的 X-Forwarded-* 才会被采信 */
+        public readonly array $trustedProxies,
         public readonly string $publicUrl,
     ) {
     }
@@ -36,7 +38,8 @@ final class Config
             rtrim($data, '/'),
             rtrim($migrations, '/'),
             rtrim($webRoot, '/'),
-            in_array(strtolower(self::env('SMSGATE_TRUST_PROXY', '1')), ['1', 'true', 'yes'], true),
+            in_array(strtolower(self::env('SMSGATE_TRUST_PROXY', '0')), ['1', 'true', 'yes'], true),
+            array_values(array_filter(array_map('trim', explode(',', self::env('SMSGATE_TRUSTED_PROXIES', '127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'))))),
             rtrim(self::env('SMSGATE_PUBLIC_URL', ''), '/'),
         );
     }
@@ -59,6 +62,9 @@ final class Config
     private static function env(string $key, string $default): string
     {
         $v = getenv($key);
+        if (($v === false || $v === '') && isset($_SERVER[$key]) && is_string($_SERVER[$key])) {
+            $v = $_SERVER[$key]; // Nginx: fastcgi_param SMSGATE_TRUST_PROXY 1;
+        }
         return ($v === false || $v === '') ? $default : $v;
     }
 }
