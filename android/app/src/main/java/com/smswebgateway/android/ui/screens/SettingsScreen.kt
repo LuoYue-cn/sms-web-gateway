@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.smswebgateway.android.BuildConfig
+import com.smswebgateway.android.sms.AppPermission
 import com.smswebgateway.android.ui.AppViewModel
 import com.smswebgateway.android.ui.KeyValueRow
 import com.smswebgateway.android.ui.SectionCard
@@ -63,6 +64,20 @@ fun SettingsScreen(
             SectionCard("权限") {
                 val miss = s.missingRequired
                 Text(if (miss.isEmpty()) "必需权限已全部授予" else "缺少：" + miss.joinToString("、") { it.title }, color = okColor(miss.isEmpty()))
+                // 可选权限不会触发「缺少必需权限」的警告，但它们决定了一些功能能不能用，这里单独列出来，避免用户看不到
+                val optionalMissing = AppPermission.values().filter { !it.required && s.permissions[it] != true }
+                if (optionalMissing.isNotEmpty()) {
+                    Text(
+                        "可选权限未授予：" + optionalMissing.joinToString("、") { it.title },
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (optionalMissing.contains(AppPermission.READ_PHONE_NUMBERS)) {
+                        Text(
+                            "未授予「读取本机号码」时，网页设备卡片上看不到 SIM 手机号（可以在网页手动填写）。",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
                 OutlinedButton(onClick = onPermissions) { Text("权限管理") }
             }
             SectionCard("Root 保活") {

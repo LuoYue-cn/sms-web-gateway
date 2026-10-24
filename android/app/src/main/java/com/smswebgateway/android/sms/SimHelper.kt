@@ -80,30 +80,52 @@ object SimHelper {
     @Suppress("DEPRECATION")
     private fun lineNumber(ctx: Context, info: android.telephony.SubscriptionInfo?): String? {
         if (info == null) return null
-        val canRead = Permissions.hasPhoneNumbers(ctx) || Permissions.hasReadSms(ctx)
-        if (!canRead) return null
+        val hasNumbers = Permissions.hasPhoneNumbers(ctx)
+        val hasSms = Permissions.hasReadSms(ctx)
+        if (!hasNumbers && !hasSms) {
+            logOnce(info.simSlotIndex, "未授予读取号码所需的权限（READ_PHONE_NUMBERS / READ_SMS）")
+            return null
+        }
         val subId = info.subscriptionId
-        val candidates = sequence<() -> String?> {
-            if (Build.VERSION.SDK_INT >= 33) {
-                val manager = sm(ctx)
-                if (manager != null && Permissions.hasPhoneNumbers(ctx)) {
-                    for (source in intArrayOf(
-                        SubscriptionManager.PHONE_NUMBER_SOURCE_UICC,
-                        SubscriptionManager.PHONE_NUMBER_SOURCE_CARRIER,
-                        SubscriptionManager.PHONE_NUMBER_SOURCE_IMS,
-                    )) {
-                        yield { manager.getPhoneNumber(subId, source) }
-                    }
-                }
+        val attempts = ArrayList<Pair<String, () -> String?>>()
+        if (Build.VERSION.SDK_INT >= 33) {
+            val manager = sm(ctx)
+            if (manager != null && hasNumbers) {
+                attempts += "SIM卡(UICC)" to { manager.getPhoneNumber(subId, SubscriptionManager.PHONE_NUMBER_SOURCE_UICC) }
+                attempts += "运营商下发" to { manager.getPhoneNumber(subId, SubscriptionManager.PHONE_NUMBER_SOURCE_CARRIER) }
+                attempts += "IMS注册" to { manager.getPhoneNumber(subId, SubscriptionManager.PHONE_NUMBER_SOURCE_IMS) }
             }
-            yield { info.number }
-            yield { tm(ctx)?.createForSubscriptionId(subId)?.line1Number }
         }
-        for (read in candidates) {
-            val n = try { normalizeNumber(read()) } catch (e: Exception) { null }
-            if (n != null) return n
+        attempts += "SubscriptionInfo.number" to { info.number }
+        attempts += "getLine1Number" to { tm(ctx)?.createForSubscriptionId(subId)?.line1Number }
+
+        val trace = StringBuilder()
+        for ((name, read) in attempts) {
+            val raw = try { read() } catch (e: Exception) {
+                trace.append(name).append("=异常:").append(e.javaClass.simpleName).append("; ")
+                continue
+            }
+            val n = normalizeNumber(raw)
+            // 只记录「是否有值 / 位数」，绝不记录号码本身
+            trace.append(name).append('=').append(if (raw.isNullOrBlank()) "空" else if (n == null) "格式无效" else "${n.length}位").append("; ")
+            if (n != null) {
+                logOnce(info.simSlotIndex, "已读到号码，来源 $name")
+                return n
+            }
         }
+        logOnce(info.simSlotIndex, "所有来源都没有号码：$trace")
         return null
+    }
+
+    private val lastLogged = HashMap<Int, String>()
+
+    /** 同一个卡槽同样的结论只记一次，避免心跳（每 30 秒）刷屏。 */
+    private fun logOnce(slot: Int, msg: String) {
+        synchronized(lastLogged) {
+            if (lastLogged[slot] == msg) return
+            lastLogged[slot] = msg
+        }
+        com.smswebgateway.android.data.AppLog.i("SimNumber", "卡槽${slot + 1}：$msg")
     }
 
     /** 读不到、空串或格式不对（不是 3–20 位数字，可带开头 +）都视为没有号码。复用发送校验，规则只有一份。 */
