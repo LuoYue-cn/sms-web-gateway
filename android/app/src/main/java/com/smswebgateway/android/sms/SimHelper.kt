@@ -71,22 +71,39 @@ object SimHelper {
     }
 
     /**
-     * SIM 上的本机号码。很多运营商（国内尤其常见）不往 SIM 里写号码，这时系统返回空串，
-     * 我们就不上报（网页端可以手动补填）。号码属于个人信息：不写日志、不做任何拼接以外的处理。
+     * 本机号码。依次尝试（任何一步读不到、抛 SecurityException 都只是换下一个，不会影响其他字段）：
+     *  1. Android 13+ `SubscriptionManager.getPhoneNumber(subId, source)`：UICC（SIM）→ 运营商下发 → IMS 注册。
+     *     官方说明这几个来源互为备份：有的运营商不往 SIM 里写号码，但会通过 IMS / 运营商渠道提供。需要 READ_PHONE_NUMBERS。
+     *  2. 旧 API `SubscriptionInfo.number` / `TelephonyManager.getLine1Number()`：需要 READ_SMS 或 READ_PHONE_NUMBERS。
+     * 全都读不到就返回 null（不上报，网页端可以手动补填）。号码属于个人信息：不写日志。
      */
     @Suppress("DEPRECATION")
     private fun lineNumber(ctx: Context, info: android.telephony.SubscriptionInfo?): String? {
-        if (info == null || !Permissions.hasPhoneState(ctx)) return null
-        val raw = try {
+        if (info == null) return null
+        val canRead = Permissions.hasPhoneNumbers(ctx) || Permissions.hasReadSms(ctx)
+        if (!canRead) return null
+        val subId = info.subscriptionId
+        val candidates = sequence<() -> String?> {
             if (Build.VERSION.SDK_INT >= 33) {
-                sm(ctx)?.getPhoneNumber(info.subscriptionId)
-            } else {
-                info.number
+                val manager = sm(ctx)
+                if (manager != null && Permissions.hasPhoneNumbers(ctx)) {
+                    for (source in intArrayOf(
+                        SubscriptionManager.PHONE_NUMBER_SOURCE_UICC,
+                        SubscriptionManager.PHONE_NUMBER_SOURCE_CARRIER,
+                        SubscriptionManager.PHONE_NUMBER_SOURCE_IMS,
+                    )) {
+                        yield { manager.getPhoneNumber(subId, source) }
+                    }
+                }
             }
-        } catch (e: Exception) {
-            null
+            yield { info.number }
+            yield { tm(ctx)?.createForSubscriptionId(subId)?.line1Number }
         }
-        return normalizeNumber(raw)
+        for (read in candidates) {
+            val n = try { normalizeNumber(read()) } catch (e: Exception) { null }
+            if (n != null) return n
+        }
+        return null
     }
 
     /** 读不到、空串或格式不对（不是 3–20 位数字，可带开头 +）都视为没有号码。复用发送校验，规则只有一份。 */

@@ -50,10 +50,13 @@ adb install -r dist/smsgate-debug.apk
 | **读取短信** (`READ_SMS`) | 同步收件箱、已发送历史短信 | **必需** | 首次同步时分批读取系统短信库 |
 | **接收短信** (`RECEIVE_SMS`) | 实时监听新到短信广播 | **必需** | 通过 `SMS_RECEIVED` 广播实时入库 |
 | **发送短信** (`SEND_SMS`) | 网页端发起短信发送 | **必需** | 调用系统 `SmsManager` 调度硬件发送 |
-| **读取电话状态** (`READ_PHONE_STATE`) | 读取 SIM 卡数量、运营商，以及 SIM 里的本机号码 | 推荐 | 用于双卡支持及状态卡片显示。**号码读不到很常见**（运营商不写入 SIM），此时网页「设备管理 → 编辑」可手动填写 |
+| **读取电话状态** (`READ_PHONE_STATE`) | 读取 SIM 卡数量与运营商，识别双卡槽位 | 必需 | 用于双卡支持、指定 SIM 发送及状态卡片显示 |
+| **读取本机号码** (`READ_PHONE_NUMBERS`) | 读取 SIM 的手机号码 | 可选 | **Android 13+ 读号码必须有这个权限**，只有「读取电话状态」读不到。授权后依次尝试 SIM 卡、运营商下发、IMS 注册三个来源；运营商没有提供时仍然读不到，此时在网页「设备管理 → 编辑」手动填写 |
 | **读取联系人** (`READ_CONTACTS`) | 解析号码对应的联系人姓名 | 可选 | 仅本地匹配姓名，便于会话列表展示 |
 | **通知权限** (`POST_NOTIFICATIONS`) | 显示前台保活服务通知 | 推荐 | Android 13+ 维持前台服务必需 |
 | **相机权限** (`CAMERA`) | 扫描绑定二维码 | 可选 | 不授权限亦可手动输入地址与令牌 |
+
+> **关于「一键登录」类 App 为什么能拿到号码**：它们不是读 SIM，而是调用运营商（移动 / 联通 / 电信）的认证网关，由运营商按你当前的蜂窝网络身份返回号码，需要接入运营商 SDK 与商户资质，普通应用不能直接使用，本项目也不依赖它。
 
 **快捷批量授权（仅限通过 adb 调试时）：**
 ```bash
@@ -61,6 +64,7 @@ adb shell pm grant com.smswebgateway.android android.permission.READ_SMS
 adb shell pm grant com.smswebgateway.android android.permission.RECEIVE_SMS
 adb shell pm grant com.smswebgateway.android android.permission.SEND_SMS
 adb shell pm grant com.smswebgateway.android android.permission.READ_PHONE_STATE
+adb shell pm grant com.smswebgateway.android android.permission.READ_PHONE_NUMBERS
 adb shell pm grant com.smswebgateway.android android.permission.READ_CONTACTS
 adb shell pm grant com.smswebgateway.android android.permission.POST_NOTIFICATIONS
 ```
