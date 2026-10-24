@@ -39,7 +39,10 @@ export const devicesApi = {
   list: () => http.get<{ items: Device[] }>('/devices'),
   createPairing: (server_url?: string) =>
     http.post<PairingInfo>('/devices/pairing', server_url ? { server_url } : {}),
-  rename: (id: number, device_name: string) => http.patch<Record<string, never>>(`/devices/${id}`, { device_name }),
+  rename: (id: number, device_name: string) => http.patch<{ device: Device }>(`/devices/${id}`, { device_name }),
+  /** 保存手动填写的 SIM 号码；值为空字符串表示清除该卡槽的手动值（回退到手机上报的号码） */
+  update: (id: number, patch: { device_name?: string; sim_numbers?: Record<number, string> }) =>
+    http.patch<{ device: Device }>(`/devices/${id}`, patch),
   remove: (id: number, purge: boolean) => http.delete<Record<string, never>>(`/devices/${id}`, purge ? { purge: 1 } : undefined),
 }
 

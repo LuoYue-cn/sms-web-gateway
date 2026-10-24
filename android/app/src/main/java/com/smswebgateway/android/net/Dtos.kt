@@ -36,7 +36,7 @@ data class PairResponse(
 )
 
 @Serializable
-data class SimInfoDto(val slot: Int, val operator: String = "", val state: String = "unknown")
+data class SimInfoDto(val slot: Int, val operator: String = "", val state: String = "unknown", val number: String? = null)
 
 @Serializable
 data class RootAuditDto(val ts: Long, val action: String, val result: String, @SerialName("exit_code") val exitCode: Int? = null)

@@ -799,5 +799,67 @@ class TestInstallExposureProbe(Base):
         self.assertTrue(js["data"]["installed"])
 
 
+class TestSimNumbers(Base):
+    def _dev(self, c):
+        return next(x for x in self.admin.ok("GET", "/devices")["items"] if x["id"] == c.device_id)
+
+    def test_device_reported_number_shown_with_source(self):
+        dev = self.new_device("simnum-a")
+        dev.ok("POST", "/device/heartbeat", {"sims": [
+            {"slot": 0, "operator": "中国电信", "state": "ready", "number": "+86 138-0013-8000"},
+            {"slot": 1, "operator": "", "state": "absent"}]})
+        sims = {x["slot"]: x for x in self._dev(dev)["sims"]}
+        self.assertEqual((sims[0]["number"], sims[0]["number_source"]), ("+8613800138000", "device"))
+        self.assertEqual((sims[1]["number"], sims[1]["number_source"]), (None, None))
+
+    def test_garbage_number_from_device_is_dropped_not_rejected(self):
+        dev = self.new_device("simnum-b")
+        dev.ok("POST", "/device/heartbeat", {"sims": [{"slot": 0, "operator": "x", "state": "ready", "number": "<script>alert(1)</script>"}]})
+        self.assertIsNone(self._dev(dev)["sims"][0]["number"])
+
+    def test_manual_overrides_device_and_survives_heartbeats(self):
+        dev = self.new_device("simnum-c")
+        dev.ok("POST", "/device/heartbeat", {"sims": [{"slot": 0, "operator": "x", "state": "ready", "number": "+8613800138000"}]})
+        r = self.admin.ok("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": {"0": "139 0013 9000", "1": "+819012345678"}})
+        sims = {x["slot"]: x for x in r["device"]["sims"]}
+        self.assertEqual((sims[0]["number"], sims[0]["number_source"]), ("13900139000", "manual"))
+        dev.ok("POST", "/device/heartbeat", {"sims": [{"slot": 0, "operator": "x", "state": "ready", "number": "+8613800138000"},
+                                                      {"slot": 1, "operator": "y", "state": "ready"}]})
+        sims = {x["slot"]: x for x in self._dev(dev)["sims"]}
+        self.assertEqual((sims[0]["number"], sims[0]["number_source"]), ("13900139000", "manual"))
+        self.assertEqual((sims[1]["number"], sims[1]["number_source"]), ("+819012345678", "manual"))
+
+    def test_clearing_manual_falls_back_to_device_value(self):
+        dev = self.new_device("simnum-d")
+        dev.ok("POST", "/device/heartbeat", {"sims": [{"slot": 0, "operator": "x", "state": "ready", "number": "+8613800138000"}]})
+        self.admin.ok("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": {"0": "13900139000"}})
+        r = self.admin.ok("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": {"0": ""}})
+        s0 = r["device"]["sims"][0]
+        self.assertEqual((s0["number"], s0["number_source"]), ("+8613800138000", "device"))
+
+    def test_validation(self):
+        dev = self.new_device("simnum-e")
+        self.admin.err("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": {"0": "abc"}}, 400, "invalid_request")
+        self.admin.err("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": {"9": "13900139000"}}, 400, "invalid_request")
+        self.admin.err("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": ["13900139000"]}, 400, "invalid_request")
+        self.admin.err("PATCH", f"/devices/{dev.device_id}", {}, 400, "invalid_request")
+        # 只改名字仍然可用（向后兼容）
+        self.admin.ok("PATCH", f"/devices/{dev.device_id}", {"device_name": "renamed"})
+
+    def test_requires_admin_and_csrf(self):
+        dev = self.new_device("simnum-f")
+        dev.err("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": {"0": "13900139000"}}, 401)
+        c = Client(self.base)
+        c.ok("POST", "/auth/login", {"username": "admin", "password": PASSWORD})
+        c.err("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": {"0": "13900139000"}}, 403, "csrf_failed")
+
+    def test_number_not_written_to_audit_log(self):
+        dev = self.new_device("simnum-g")
+        self.admin.ok("PATCH", f"/devices/{dev.device_id}", {"sim_numbers": {"0": "13955556666"}})
+        logs = self.admin.ok("GET", "/audit-logs?action=device_sim_numbers&page_size=50")["items"]
+        self.assertTrue(logs)
+        self.assertFalse(any("13955556666" in json.dumps(l) for l in logs))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

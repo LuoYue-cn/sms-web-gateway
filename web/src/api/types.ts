@@ -54,6 +54,9 @@ export interface SimInfo {
   slot: number
   operator: string
   state: SimState | string
+  /** SIM 号码：手动填写优先，其次是手机上报；两者都没有则为 null（很多运营商不往 SIM 里写号码） */
+  number?: string | null
+  number_source?: 'manual' | 'device' | null
 }
 
 export interface Device {

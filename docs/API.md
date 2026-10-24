@@ -45,7 +45,7 @@
 | GET | `/devices` | → `{items: [Device]}` |
 | POST | `/devices/pairing` | Body 可选 `{server_url}`。→ `{pairing_token, expires_at, server_url, qr_payload}`；`qr_payload` 是字符串 `{"server_url":"…","pairing_token":"…"}`（直接用来生成二维码）。令牌 5 分钟过期、一次性 |
 | DELETE | `/devices/{id}` | 吊销设备令牌并删除设备记录（短信记录默认保留，`?purge=1` 同时删除该设备的会话与短信，仅服务端） |
-| PATCH | `/devices/{id}` | `{device_name}` 重命名 |
+| PATCH | `/devices/{id}` | `{device_name?, sim_numbers?}`，至少提供一个。`sim_numbers` 是 `{卡槽: 号码}`，例如 `{"0": "+8613800138000", "1": ""}`：号码按发送规则规范化（3–20 位数字，可带开头 `+`），**空字符串 = 清除该卡槽的手动值**（回退到手机上报的号码）。返回 `{device}`。写审计日志 `device_sim_numbers`（只记录卡槽，不记录号码） |
 
 **Device**
 ```json
@@ -53,7 +53,8 @@
   "id": 1, "device_name": "Redmi K40", "android_version": "15", "app_version": "1.0.0",
   "battery_level": 98, "charging": true, "network_type": "wifi",
   "sim_count": 2, "sim_operator": "中国电信",
-  "sims": [{"slot": 0, "operator": "中国电信", "state": "ready"}, {"slot": 1, "operator": "", "state": "absent"}],
+  "sims": [{"slot": 0, "operator": "中国电信", "state": "ready", "number": "+8613800138000", "number_source": "device"},
+           {"slot": 1, "operator": "", "state": "absent", "number": null, "number_source": null}],
   "last_seen": 1760000000000, "online": true,
   "sync_status": "idle|running|done|error|never",
   "sync_total": 12000, "sync_synced": 3400,
@@ -66,6 +67,8 @@
   "created_at": 1760000000000
 }
 ```
+`sims[].number`：SIM 号码，**手动填写优先，其次是手机上报**，都没有则为 `null`；`number_source` 为 `"manual"` / `"device"` / `null`。很多运营商（国内尤其常见）不往 SIM 里写号码，手机读出来是空的，所以网页支持手动补填；手动值只存服务器，不会修改手机。
+
 `online` = 最近 `online_threshold_seconds`（设置项，默认 60）秒内有心跳。
 
 ### 会话与短信
@@ -154,7 +157,7 @@ Body：`{pairing_token, device_name, android_version, app_version, sim_count}`
 {
   "battery_level": 98, "charging": true, "network_type": "wifi|mobile|ethernet|none",
   "sim_count": 2, "sim_operator": "中国电信",
-  "sims": [{"slot": 0, "operator": "中国电信", "state": "ready|absent|locked|unknown"}],
+  "sims": [{"slot": 0, "operator": "中国电信", "state": "ready|absent|locked|unknown", "number": "+8613800138000"}],
   "app_version": "1.0.0", "android_version": "15",
   "sync_status": "idle|running|done|error|never",
   "keepalive_mode": "normal|root_enhanced",
@@ -165,7 +168,7 @@ Body：`{pairing_token, device_name, android_version, app_version, sim_count}`
   "root_audit": [{"ts": 1760000000000, "action": "whitelist_add", "result": "ok", "exit_code": 0}]
 }
 ```
-所有字段可选，缺省则保持原值。`root_audit` 最多 20 条，**仅摘要，不含短信内容或令牌**，服务端写入 `audit_logs`（action=`root_op`）。
+所有字段可选，缺省则保持原值。`sims[].number` 仅在手机读到号码时才带；格式不合法的号码会被服务端丢弃（不会让整个心跳失败）。`root_audit` 最多 20 条，**仅摘要，不含短信内容或令牌**，服务端写入 `audit_logs`（action=`root_op`）。
 → `{server_time, send_paused, config:{heartbeat_interval_s, poll_wait_s, online_threshold_seconds}}`。
 
 ### 短信同步

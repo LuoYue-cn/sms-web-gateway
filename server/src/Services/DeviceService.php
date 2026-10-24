@@ -124,11 +124,17 @@ final class DeviceService
             $sims = [];
             foreach (array_slice($body['sims'], 0, 8) as $s) {
                 if (is_array($s)) {
-                    $sims[] = [
+                    $entry = [
                         'slot' => (int) ($s['slot'] ?? 0),
                         'operator' => mb_substr((string) ($s['operator'] ?? ''), 0, 100),
                         'state' => in_array($s['state'] ?? '', ['ready', 'absent', 'locked', 'unknown'], true) ? $s['state'] : 'unknown',
                     ];
+                    // 手机读不到号码时不会带这个字段；只接受规范的号码，其他一律丢弃而不是报错
+                    $num = isset($s['number']) && is_string($s['number']) ? PhoneNumber::normalizeForSend($s['number']) : null;
+                    if ($num !== null) {
+                        $entry['number'] = $num;
+                    }
+                    $sims[] = $entry;
                 }
             }
             $hb['sims_json'] = json_encode($sims, JSON_UNESCAPED_UNICODE);

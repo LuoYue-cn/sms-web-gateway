@@ -72,6 +72,26 @@ final class DeviceRepository
         return $this->db->one('SELECT * FROM devices WHERE id = ?', [$id]);
     }
 
+    /**
+     * 保存管理员手动填写的卡槽号码。$numbers: 卡槽 => 规范化号码；空字符串表示清除该卡槽的手动值。
+     *
+     * @param array<int,string> $numbers
+     */
+    public function setSimNumbers(int $id, array $numbers): void
+    {
+        $row = $this->db->one('SELECT sim_numbers_json FROM devices WHERE id = ?', [$id]);
+        $cur = json_decode((string) ($row['sim_numbers_json'] ?? '{}'), true);
+        $cur = is_array($cur) ? $cur : [];
+        foreach ($numbers as $slot => $num) {
+            if ($num === '') {
+                unset($cur[(string) $slot]);
+            } else {
+                $cur[(string) $slot] = $num;
+            }
+        }
+        $this->db->exec('UPDATE devices SET sim_numbers_json = ? WHERE id = ?', [json_encode((object) $cur), $id]);
+    }
+
     public function rename(int $id, string $name): bool
     {
         return $this->db->exec('UPDATE devices SET device_name = ? WHERE id = ?', [$name, $id]) === 1;
@@ -216,6 +236,19 @@ final class DeviceRepository
         $cur = $this->db->one('SELECT * FROM sync_cursors WHERE device_id = ?', [$id]) ?? [];
         $pending = (int) $this->db->value("SELECT COUNT(*) FROM send_tasks WHERE device_id = ? AND status IN ('queued','claimed','sending')", [$id]);
         $sims = json_decode((string) $r['sims_json'], true);
+        $manual = json_decode((string) ($r['sim_numbers_json'] ?? '{}'), true);
+        $manual = is_array($manual) ? $manual : [];
+        if (is_array($sims)) {
+            // 展示用：手动填写优先，其次是手机上报的号码；两者都没有就是 null
+            foreach ($sims as &$sim) {
+                $slot = (string) ($sim['slot'] ?? '');
+                $auto = isset($sim['number']) && is_string($sim['number']) ? $sim['number'] : null;
+                $man = isset($manual[$slot]) && is_string($manual[$slot]) ? $manual[$slot] : null;
+                $sim['number'] = $man ?? $auto;
+                $sim['number_source'] = $man !== null ? 'manual' : ($auto !== null ? 'device' : null);
+            }
+            unset($sim);
+        }
         return [
             'id' => $id,
             'device_name' => $r['device_name'],

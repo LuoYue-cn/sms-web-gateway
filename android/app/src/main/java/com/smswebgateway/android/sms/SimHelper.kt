@@ -9,7 +9,7 @@ import com.smswebgateway.android.net.SimInfoDto
 
 /** SIM / 卡槽信息。除 phoneCount / simState 外都需要 READ_PHONE_STATE；无权限时优雅降级。 */
 object SimHelper {
-    data class SimSlot(val slot: Int, val subId: Int?, val operator: String, val state: String)
+    data class SimSlot(val slot: Int, val subId: Int?, val operator: String, val state: String, val number: String? = null)
 
     private fun tm(ctx: Context) = ctx.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
     private fun sm(ctx: Context) = ctx.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as? SubscriptionManager
@@ -65,11 +65,34 @@ object SimHelper {
                 subId = info?.subscriptionId,
                 operator = (info?.carrierName ?: info?.displayName)?.toString().orEmpty(),
                 state = state,
+                number = if (state == "absent") null else lineNumber(ctx, info),
             )
         }
     }
 
-    fun simDtos(ctx: Context): List<SimInfoDto> = slots(ctx).map { SimInfoDto(it.slot, it.operator, it.state) }
+    /**
+     * SIM 上的本机号码。很多运营商（国内尤其常见）不往 SIM 里写号码，这时系统返回空串，
+     * 我们就不上报（网页端可以手动补填）。号码属于个人信息：不写日志、不做任何拼接以外的处理。
+     */
+    @Suppress("DEPRECATION")
+    private fun lineNumber(ctx: Context, info: android.telephony.SubscriptionInfo?): String? {
+        if (info == null || !Permissions.hasPhoneState(ctx)) return null
+        val raw = try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                sm(ctx)?.getPhoneNumber(info.subscriptionId)
+            } else {
+                info.number
+            }
+        } catch (e: Exception) {
+            null
+        }
+        return normalizeNumber(raw)
+    }
+
+    /** 读不到、空串或格式不对（不是 3–20 位数字，可带开头 +）都视为没有号码。复用发送校验，规则只有一份。 */
+    fun normalizeNumber(raw: String?): String? = if (raw.isNullOrBlank()) null else PhoneNumber.normalizeForSend(raw)
+
+    fun simDtos(ctx: Context): List<SimInfoDto> = slots(ctx).map { SimInfoDto(it.slot, it.operator, it.state, it.number) }
 
     /** 已插卡的数量（state != absent）。 */
     fun simCount(ctx: Context): Int = slots(ctx).count { it.state != "absent" }

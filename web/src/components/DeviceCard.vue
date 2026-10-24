@@ -35,6 +35,8 @@ const syncPercent = computed(() => {
 })
 const syncMeta = computed(() => SYNC[d.value.sync_status] ?? SYNC.idle)
 const sims = computed(() => (d.value.sims?.length ? d.value.sims : []))
+/** 有卡在位但没有号码：提示管理员可手动补填 */
+const missingNumber = computed(() => sims.value.some((x) => x.state === 'ready' && !x.number))
 const lowBattery = computed(() => d.value.battery_level != null && d.value.battery_level <= 20 && !d.value.charging)
 
 function simState(s: string): string {
@@ -90,11 +92,12 @@ function yesNo(v: boolean): string {
         <span class="v wrap">
           <template v-if="sims.length">
             <n-tag v-for="s in sims" :key="s.slot" size="small" :type="s.state === 'ready' ? 'info' : 'default'" :bordered="false">
-              SIM {{ s.slot + 1 }}：{{ s.operator || '—' }} · {{ simState(s.state) }}
+              SIM {{ s.slot + 1 }}：{{ s.operator || '—' }} · {{ simState(s.state) }}<template v-if="s.number"> · <span class="num" :title="s.number_source === 'manual' ? '手动填写' : '手机上报'">{{ s.number }}</span></template>
             </n-tag>
           </template>
           <template v-else>{{ d.sim_operator || '—' }}</template>
         </span>
+        <span v-if="missingNumber" class="muted small hint">部分 SIM 没有读到号码（运营商常不写入 SIM），可点右上角编辑按钮手动填写</span>
       </div>
     </section>
 
@@ -257,6 +260,12 @@ function yesNo(v: boolean): string {
 .keep-t {
   font-weight: 600;
   margin-bottom: 8px;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+.hint {
+  margin-top: 2px;
 }
 @media (max-width: 520px) {
   .dev {

@@ -15,6 +15,7 @@ use SmsGate\Services\EventBus;
 use SmsGate\Services\SendService;
 use SmsGate\Support\ApiException;
 use SmsGate\Support\Clock;
+use SmsGate\Support\PhoneNumber;
 use SmsGate\Support\Validator;
 
 /** Session-authenticated admin endpoints (auth + CSRF are enforced by the kernel before these run). */
@@ -85,12 +86,54 @@ final class AdminController
 
     public function renameDevice(Request $req, array $p): Response
     {
-        $v = new Validator($req->json());
-        $name = $v->string('device_name', 1, 100);
-        $v->check();
+        $body = $req->json();
+        $v = new Validator($body);
         $id = (int) $p['id'];
-        if ($this->devices->find($id) === null || !$this->devices->rename($id, $name)) {
+        if ($this->devices->find($id) === null) {
             throw ApiException::notFound('设备');
+        }
+        $name = $v->has('device_name') ? $v->string('device_name', 1, 100) : null;
+
+        // sim_numbers: {"0": "+8613800138000", "1": ""}，空字符串 = 清除手动值
+        $numbers = [];
+        if (array_key_exists('sim_numbers', $body)) {
+            // 用 json_decode 的对象模式重新解析原始请求体：JSON 对象 {"0": "..."} 会得到 stdClass，
+            // JSON 数组得到 array。只看 PHP 关联数组无法区分 {"0": "x"} 与 ["x"]（键都是整数 0）。
+            $objForm = json_decode($req->body, false);
+            $isObject = is_object($objForm) && isset($objForm->sim_numbers) && is_object($objForm->sim_numbers);
+            if (!is_array($body['sim_numbers']) || !$isObject) {
+                $v->fail('sim_numbers', '必须是 {卡槽: 号码} 的对象');
+            } else {
+                foreach ($body['sim_numbers'] as $slot => $raw) {
+                    $key = (string) $slot;
+                    if (!ctype_digit($key) || (int) $key > 7) {
+                        $v->fail("sim_numbers.$key", '卡槽必须是 0–7');
+                        continue;
+                    }
+                    if ($raw === null || $raw === '' || (is_string($raw) && trim($raw) === '')) {
+                        $numbers[(int) $key] = '';
+                        continue;
+                    }
+                    $norm = is_string($raw) ? PhoneNumber::normalizeForSend($raw) : null;
+                    if ($norm === null) {
+                        $v->fail("sim_numbers.$key", '号码格式不正确（可带国家码，如 +8613800138000）');
+                        continue;
+                    }
+                    $numbers[(int) $key] = $norm;
+                }
+            }
+        }
+        if ($name === null && !array_key_exists('sim_numbers', $body)) {
+            $v->fail('device_name', '至少提供 device_name 或 sim_numbers');
+        }
+        $v->check();
+
+        if ($name !== null) {
+            $this->devices->rename($id, $name);
+        }
+        if ($numbers !== []) {
+            $this->devices->setSimNumbers($id, $numbers);
+            $this->audit->log('admin', $req->attributes['user']['username'], 'device_sim_numbers', $id, 'device:' . $id, 'slots=' . implode(',', array_keys($numbers)), $req->ip);
         }
         $this->bus->deviceUpdate($id);
         return Response::json(['device' => $this->devices->find($id)]);
