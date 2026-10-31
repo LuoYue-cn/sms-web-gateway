@@ -3,7 +3,8 @@ import { computed } from 'vue'
 import { NButton, NTag, NTooltip } from 'naive-ui'
 import type { Message } from '@/api'
 import CopyCodeButton from './CopyCodeButton.vue'
-import { simLabel, splitCode, statusMeta } from '@/utils/sms'
+import { simLabel, statusMeta } from '@/utils/sms'
+import { richSegments } from '@/utils/linkify'
 import { formatClock, formatDateTime } from '@/utils/time'
 
 const props = defineProps<{ msg: Message; tz: string }>()
@@ -12,15 +13,15 @@ const emit = defineEmits<{ (e: 'resolve', m: Message): void }>()
 const outgoing = computed(() => props.msg.direction === 'outgoing')
 const meta = computed(() => statusMeta(props.msg.status))
 const sim = computed(() => simLabel(props.msg.sim_slot))
-/** 收到的短信里识别出验证码时，把它在气泡里高亮出来 */
-const parts = computed(() => (!outgoing.value && props.msg.code ? splitCode(props.msg.content, props.msg.code) : null))
+/** 链接显示成可点击的蓝链；收到的短信里识别出验证码时高亮。全部按片段渲染，不用 v-html */
+const segs = computed(() => richSegments(props.msg.content, outgoing.value ? null : props.msg.code))
 </script>
 
 <template>
   <div class="row" :class="outgoing ? 'out' : 'in'">
     <div class="wrap">
       <!-- 短信内容一律按文本渲染（插值会转义），不使用 v-html -->
-      <div class="bubble sms-text"><template v-if="parts">{{ parts[0] }}<mark class="code">{{ parts[1] }}</mark>{{ parts[2] }}</template><template v-else>{{ msg.content }}</template></div>
+      <div class="bubble sms-text"><template v-for="(s, i) in segs" :key="i"><a v-if="s.href" :href="s.href" class="lnk" target="_blank" rel="noopener noreferrer nofollow">{{ s.text }}</a><mark v-else-if="s.code" class="code">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></div>
       <copy-code-button v-if="!outgoing && msg.code" :code="msg.code" class="copy-btn" />
       <div class="meta">
         <n-tooltip>
@@ -75,12 +76,28 @@ const parts = computed(() => (!outgoing.value && props.msg.code ? splitCode(prop
 .in .bubble {
   background: var(--bubble-in);
   color: var(--bubble-in-text);
+  border: 1px solid var(--bubble-in-border);
+  box-shadow: 0 1px 2px rgba(20, 30, 60, 0.12);
   border-bottom-left-radius: 4px;
 }
 .out .bubble {
   background: var(--bubble-out);
   color: var(--bubble-out-text);
   border-bottom-right-radius: 4px;
+}
+.lnk {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.lnk:hover {
+  filter: brightness(1.15);
+}
+/* 发出的气泡本身是蓝底，蓝链会看不见，改用浅色 */
+.out .lnk {
+  color: #fff;
+  font-weight: 600;
 }
 .code {
   padding: 0 3px;

@@ -214,7 +214,7 @@ function onMenu(k: string): void {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--bg);
+  background: var(--chat-bg);
 }
 .head {
   flex: none;
@@ -259,7 +259,7 @@ function onMenu(k: string): void {
   padding: 1px 10px;
   font-size: 12px;
   color: var(--text-2);
-  background: var(--panel-2);
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 999px;
 }

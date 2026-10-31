@@ -8,8 +8,11 @@
   --text-3: #9aa2b3;
   --accent: #2f7cf6;
   --accent-soft: rgba(47, 124, 246, 0.1);
-  --bubble-in: #eceff5;
+  --chat-bg: #d9dfea;
+  --bubble-in: #ffffff;
   --bubble-in-text: #1c2230;
+  --bubble-in-border: #b4bfd1;
+  --link: #1a63d8;
   --bubble-out: #2f7cf6;
   --bubble-out-text: #ffffff;
   --danger: #d03050;
@@ -30,8 +33,11 @@
   --text-3: #6c7588;
   --accent: #4a8ff8;
   --accent-soft: rgba(74, 143, 248, 0.16);
-  --bubble-in: #262b34;
+  --chat-bg: #0a0c0f;
+  --bubble-in: #2f3643;
   --bubble-in-text: #e6e9ef;
+  --bubble-in-border: #465063;
+  --link: #7db2ff;
   --bubble-out: #2f6fdb;
   --bubble-out-text: #ffffff;
   --shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
