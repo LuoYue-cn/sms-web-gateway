@@ -221,7 +221,7 @@ const disabledDate = (ts: number): boolean => ts > Date.now()
                 </div>
               </header>
 
-              <div v-if="running" class="running"><n-spin size="small" /> 正在生成，请稍候…（AI 最长等待约 1 分钟）</div>
+              <div v-if="running" class="running"><n-spin size="small" /> 正在生成，请稍候…（思考型模型可能需要几分钟，页面会自动刷新）</div>
               <n-alert v-else-if="current.status === 'failed'" type="error" :bordered="false">{{ current.error || '生成失败' }}</n-alert>
 
               <template v-else>

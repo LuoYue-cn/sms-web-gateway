@@ -11,8 +11,9 @@ use SmsGate\Repositories\SettingsRepository;
  */
 final class AiClient
 {
-    public const TIMEOUT_S = 60;
-    public const MAX_ATTEMPTS = 3;
+    /** 不限制输出长度、不指定思考深度，思考型模型可能要想很久，所以等待时间放宽 */
+    public const TIMEOUT_S = 240;
+    public const MAX_ATTEMPTS = 2;
 
     public function __construct(private SettingsRepository $settings)
     {
@@ -49,10 +50,13 @@ final class AiClient
     }
 
     /**
+     * 刻意不发 max_tokens、temperature 和任何思考相关参数：让模型与服务商用各自的默认值（自动思考），
+     * 这样 DeepSeek / OpenAI o 系列 / 通义等不同服务商都不会因为不支持某个参数而报错。
+     *
      * @param list<array{role:string,content:string}> $messages
      * @return array{content:string,prompt_tokens:int,completion_tokens:int,model:string}
      */
-    public function chat(array $messages, int $maxTokens = 1500, int $attempts = self::MAX_ATTEMPTS, float $temperature = 0.3): array
+    public function chat(array $messages, int $timeout = self::TIMEOUT_S, int $attempts = self::MAX_ATTEMPTS): array
     {
         $url = $this->endpoint();
         if ($url === '' || $this->settings->get('ai_model') === '') {
@@ -64,14 +68,12 @@ final class AiClient
         $payload = json_encode([
             'model' => $this->settings->get('ai_model'),
             'messages' => $messages,
-            'temperature' => $temperature,
-            'max_tokens' => $maxTokens,
             'stream' => false,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
 
         $last = '';
         for ($i = 1; $i <= $attempts; $i++) {
-            [$status, $body, $netErr] = $this->post($url, (string) $payload);
+            [$status, $body, $netErr] = $this->post($url, (string) $payload, $timeout);
             if ($status >= 200 && $status < 300) {
                 return $this->parse($body);
             }
@@ -88,7 +90,7 @@ final class AiClient
     }
 
     /** @return array{0:int,1:string,2:string} status, body, network error */
-    private function post(string $url, string $payload): array
+    private function post(string $url, string $payload, int $timeout): array
     {
         $headers = ['Content-Type: application/json', 'Accept: application/json'];
         $key = $this->apiKey();
@@ -99,7 +101,7 @@ final class AiClient
             $ch = curl_init($url);
             curl_setopt_array($ch, [
                 CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload, CURLOPT_HTTPHEADER => $headers,
-                CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => self::TIMEOUT_S, CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => $timeout, CURLOPT_CONNECTTIMEOUT => 10,
                 CURLOPT_FOLLOWLOCATION => false, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             ]);
             $body = curl_exec($ch);
@@ -110,7 +112,7 @@ final class AiClient
         }
         $ctx = stream_context_create(['http' => [
             'method' => 'POST', 'header' => implode("\r\n", $headers), 'content' => $payload,
-            'timeout' => self::TIMEOUT_S, 'ignore_errors' => true, 'follow_location' => 0,
+            'timeout' => $timeout, 'ignore_errors' => true, 'follow_location' => 0,
         ]]);
         $body = @file_get_contents($url, false, $ctx);
         if ($body === false) {
@@ -129,9 +131,21 @@ final class AiClient
     private function parse(string $body): array
     {
         $j = json_decode($body, true);
-        $content = is_array($j) ? ($j['choices'][0]['message']['content'] ?? null) : null;
-        if (!is_string($content) || trim($content) === '') {
-            throw new AiException('AI 服务返回了无法识别的内容（请确认地址是 OpenAI 兼容的 /v1 接口）');
+        $choice = is_array($j) && isset($j['choices'][0]) && is_array($j['choices'][0]) ? $j['choices'][0] : null;
+        if ($choice === null) {
+            throw new AiException('AI 服务返回的格式不是 OpenAI 兼容的响应（请确认地址是 OpenAI 兼容的 /v1 接口）');
+        }
+        $content = self::text($choice['message']['content'] ?? null);
+        if ($content === '') {
+            $reason = is_string($choice['finish_reason'] ?? null) ? $choice['finish_reason'] : '';
+            $thought = self::text($choice['message']['reasoning_content'] ?? null) !== '';
+            if ($reason === 'length') {
+                throw new AiException('AI 服务在给出答案之前就达到了它自己的输出上限（finish_reason=length），' . ($thought ? '模型把额度都用在了思考上。' : '') . '可以换用非思考模型，或到服务商后台调高输出上限');
+            }
+            if ($reason === 'content_filter') {
+                throw new AiException('AI 服务的内容安全过滤拦截了这次回答（finish_reason=content_filter）');
+            }
+            throw new AiException($thought ? 'AI 模型只返回了思考过程，没有给出最终答案' : 'AI 模型返回了空的回答' . ($reason !== '' ? "（finish_reason=$reason）" : ''));
         }
         return [
             'content' => $content,
@@ -139,6 +153,24 @@ final class AiClient
             'completion_tokens' => (int) ($j['usage']['completion_tokens'] ?? 0),
             'model' => is_string($j['model'] ?? null) ? $j['model'] : $this->settings->get('ai_model'),
         ];
+    }
+
+    /** content 通常是字符串；少数服务商返回 [{type:"text",text:"…"}] 形式的分段 */
+    private static function text(mixed $v): string
+    {
+        if (is_string($v)) {
+            return trim($v);
+        }
+        if (is_array($v)) {
+            $o = '';
+            foreach ($v as $part) {
+                if (is_array($part) && is_string($part['text'] ?? null)) {
+                    $o .= $part['text'];
+                }
+            }
+            return trim($o);
+        }
+        return '';
     }
 
     private function httpError(int $status, string $body): string

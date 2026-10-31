@@ -22,7 +22,8 @@ final class ReportService
 {
     private const MAX_EXCERPTS = 40;
     private const EXCERPT_CHARS = 90;
-    private const STALE_RUNNING_MS = 300_000;
+    /** 比 AI 请求的最长耗时（超时 × 重试次数）更长，避免还在生成就被判定为失败 */
+    private const STALE_RUNNING_MS = 1_200_000;
 
     public function __construct(
         private Database $db,
@@ -115,7 +116,7 @@ final class ReportService
             $ct = 0;
             if ($useAi && $this->ai->ready()) {
                 try {
-                    $res = $this->ai->chat($this->prompt($date, $data), 1500);
+                    $res = $this->ai->chat($this->prompt($date, $data));
                     $parsed = self::parseAiReply($res['content']);
                     if ($parsed === null) {
                         throw new AiException('AI 返回的内容不是预期的 JSON 格式');

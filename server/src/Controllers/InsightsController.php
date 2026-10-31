@@ -151,7 +151,8 @@ final class InsightsController
     {
         $this->limiter->hit('ai-test', 6, 60);
         try {
-            $r = $this->ai->chat([['role' => 'user', 'content' => '请只回复两个字：成功']], 20, 1, 0.0);
+            // 同步请求：必须短于常见的 PHP-FPM request_terminate_timeout（宝塔默认 100 秒），才能给出明确的超时原因而不是 502
+            $r = $this->ai->chat([['role' => 'user', 'content' => '请只回复两个字：成功']], 90, 1);
         } catch (AiException $e) {
             return Response::json(['ok' => false, 'message' => $e->getMessage()]);
         }

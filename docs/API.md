@@ -148,7 +148,9 @@ Body：`{device_id, recipient, content, sim_slot?: int, confirm_warnings?: bool}
 | POST | `/reports/generate` | `{date?, use_ai?: true}`。立刻返回 `202` + 状态为 `running` 的 `Report`，响应发出后在同一个 PHP 进程里继续生成；前端轮询 `GET /reports/{date}`。同一天重新生成会覆盖。限频 10 次/分钟 |
 | DELETE | `/reports/{date}` | 删除 |
 
-**Report**：`{date, status:"running|done|failed", source:"ai|rules", model, detail_level, content:{summary, highlights[], anomalies[], suggestions[], facts}, error, prompt_tokens, completion_tokens, created_at, updated_at}`。`facts` 是当天的数字摘要（不含号码、正文、验证码）。AI 不可用或返回无法解析的内容时自动回退为规则模板（`source:"rules"`，`error` 说明原因）；`running` 超过 5 分钟视为失败。
+**Report**：`{date, status:"running|done|failed", source:"ai|rules", model, detail_level, content:{summary, highlights[], anomalies[], suggestions[], facts}, error, prompt_tokens, completion_tokens, created_at, updated_at}`。`facts` 是当天的数字摘要（不含号码、正文、验证码）。AI 不可用或返回无法解析的内容时自动回退为规则模板（`source:"rules"`，`error` 说明原因）；`running` 超过 20 分钟视为失败。
+
+请求体只有 `model`、`messages`、`stream:false` 三项：**不发 `max_tokens`、`temperature` 和任何思考相关参数**，由模型与服务商用默认值自动决定（DeepSeek 等思考型模型因此会自动思考）。单次请求最长等待 240 秒，最多尝试 2 次；回答为空时，错误信息会说明原因（输出上限用尽 / 只有思考过程 / 内容安全过滤），而不是笼统地说格式不对。
 
 发给 AI 的内容按 `ai_detail_level` 分三档，**任何档位都不发短信原文、完整号码、联系人姓名和验证码**：`0` 只有聚合数字；`1` 加发件来源（短信签名或打码号码）和类别计数；`2` 再加脱敏后的正文摘要（最多 40 条 × 90 字，验证码短信不带正文）。
 

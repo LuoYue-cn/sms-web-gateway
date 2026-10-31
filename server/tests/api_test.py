@@ -864,12 +864,14 @@ class TestSimNumbers(Base):
 class FakeAI:
     """A throw-away OpenAI-compatible server. Records every request so tests can inspect exactly what was sent."""
 
-    def __init__(self, reply=None, status=200):
+    def __init__(self, reply=None, status=200, message=None, finish_reason="stop"):
         import http.server
         outer = self
         self.requests = []
         self.reply = reply
         self.status = status
+        self.message = message
+        self.finish_reason = finish_reason
 
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -884,7 +886,8 @@ class FakeAI:
                 else:
                     content = outer.reply if outer.reply is not None else json.dumps(
                         {"summary": "今天一切正常。", "highlights": ["收到若干短信"], "anomalies": [], "suggestions": []}, ensure_ascii=False)
-                    out = json.dumps({"model": "fake-1", "choices": [{"message": {"content": content}}],
+                    msg = outer.message if outer.message is not None else {"content": content}
+                    out = json.dumps({"model": "fake-1", "choices": [{"message": msg, "finish_reason": outer.finish_reason}],
                                       "usage": {"prompt_tokens": 11, "completion_tokens": 7}}, ensure_ascii=False).encode()
                     code = 200
                 self.send_response(code)
@@ -1060,6 +1063,14 @@ class TestAiReports(Base):
         cls.ai.close()
         super().tearDownClass()
 
+    def setUp(self):
+        # 限流（测试连接 6 次/分钟、生成 10 次/分钟）是产品行为，不放宽；测试之间直接清掉计数桶
+        import sqlite3
+        db = sqlite3.connect(os.path.join(self.data_dir, "sms_gateway.sqlite"), timeout=10)
+        db.execute("DELETE FROM rate_limits WHERE bucket IN ('ai-test', 'report-gen')")
+        db.commit()
+        db.close()
+
     def _configure(self, **kw):
         body = {"ai_enabled": True, "ai_base_url": self.ai.url, "ai_model": "fake-1", "ai_api_key": "sk-test-SECRET-123", "ai_detail_level": 2}
         body.update(kw)
@@ -1076,6 +1087,12 @@ class TestAiReports(Base):
 
     def _today(self):
         return self.admin.ok("GET", "/stats?range=today")["range"]["to"]
+
+    def test_rate_limits_are_enforced(self):
+        self._configure()
+        for _ in range(6):
+            self.assertTrue(self.admin.ok("POST", "/ai/test", {})["ok"])
+        self.admin.err("POST", "/ai/test", {}, 429, "rate_limited")
 
     def test_key_is_write_only(self):
         c = self._configure()
@@ -1118,6 +1135,89 @@ class TestAiReports(Base):
             self.assertNotIn(secret, sent, f"{secret} leaked to the AI")
         self.assertIn("京东", sent)  # level>=1 允许出现短信签名
         self.assertNotIn("SECRET", sent)
+
+
+    def test_request_has_no_token_limit_temperature_or_thinking_params(self):
+        """用户要求：不限制 token、不固定思考深度。请求里不能出现这些字段，由模型与服务商自己决定。"""
+        self._configure()
+        self.admin.ok("POST", "/ai/test", {})
+        date = self._today()
+        self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+        self._wait(date)
+        for req in self.ai.requests[-2:]:
+            self.assertEqual(sorted(req["body"].keys()), ["messages", "model", "stream"], req["body"].keys())
+            blob = json.dumps(req["body"])
+            for banned in ("max_tokens", "max_completion_tokens", "temperature", "thinking", "reasoning"):
+                self.assertNotIn(banned, blob)
+
+    def test_thinking_model_reply_with_reasoning_content_is_accepted(self):
+        m = {"role": "assistant", "reasoning_content": "先想想……用户要 JSON", "content": json.dumps({"summary": "思考后的答案", "highlights": [], "anomalies": [], "suggestions": []}, ensure_ascii=False)}
+        srv = FakeAI(message=m)
+        try:
+            self._configure(ai_base_url=srv.url)
+            date = self._today()
+            self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+            rep = self._wait(date)
+            self.assertEqual((rep["source"], rep["content"]["summary"]), ("ai", "思考后的答案"))
+            self.assertNotIn("先想想", json.dumps(rep, ensure_ascii=False))  # 思考过程不展示、不存储
+        finally:
+            srv.close()
+            self._configure()
+
+    def test_content_as_text_parts_is_accepted(self):
+        j = json.dumps({"summary": "分段内容", "highlights": [], "anomalies": [], "suggestions": []}, ensure_ascii=False)
+        srv = FakeAI(message={"content": [{"type": "text", "text": j[:10]}, {"type": "text", "text": j[10:]}]})
+        try:
+            self._configure(ai_base_url=srv.url)
+            self.assertTrue(self.admin.ok("POST", "/ai/test", {})["ok"])
+            date = self._today()
+            self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+            self.assertEqual(self._wait(date)["content"]["summary"], "分段内容")
+        finally:
+            srv.close()
+            self._configure()
+
+    def test_empty_answer_errors_say_what_actually_happened(self):
+        cases = [
+            (dict(message={"content": "", "reasoning_content": "想了很久"}, finish_reason="length"), ["输出上限", "思考"]),
+            (dict(message={"content": None, "reasoning_content": "只有思考"}, finish_reason="stop"), ["只返回了思考过程"]),
+            (dict(message={"content": ""}, finish_reason="stop"), ["空的回答"]),
+            (dict(message={"content": ""}, finish_reason="content_filter"), ["内容安全过滤"]),
+        ]
+        for kw, needles in cases:
+            srv = FakeAI(**kw)
+            try:
+                self._configure(ai_base_url=srv.url)
+                r = self.admin.ok("POST", "/ai/test", {})
+                self.assertFalse(r["ok"], kw)
+                for n in needles:
+                    self.assertIn(n, r["message"], (kw, r["message"]))
+                self.assertNotIn("OpenAI 兼容", r["message"], "空回答不应再被说成「地址不对」")
+            finally:
+                srv.close()
+        self._configure()
+
+    def test_non_openai_body_still_reports_format_problem(self):
+        srv = FakeAI()
+        srv.reply = None
+        try:
+            # 返回的不是 chat.completions 结构
+            import http.server
+            class H(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *a): pass
+                def do_POST(self):
+                    out = b'{"hello":"world"}'
+                    self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+            other = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+            threading.Thread(target=other.serve_forever, daemon=True).start()
+            self._configure(ai_base_url=f"http://127.0.0.1:{other.server_address[1]}/v1")
+            r = self.admin.ok("POST", "/ai/test", {})
+            self.assertFalse(r["ok"])
+            self.assertIn("OpenAI 兼容", r["message"])
+            other.shutdown()
+        finally:
+            srv.close()
+            self._configure()
 
     def test_level0_sends_only_aggregates(self):
         self._configure(ai_detail_level=0)
