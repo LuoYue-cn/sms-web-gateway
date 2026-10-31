@@ -121,3 +121,33 @@ export function excerptAround(text: string, q: string, radius = 60): string {
   const end = Math.min(text.length, idx + radius * 2)
   return '…' + text.slice(start, end) + (end < text.length ? '…' : '')
 }
+
+/** 短信签名，如「【京东】」里的京东；没有则为空串（与服务端规则一致） */
+export function senderTag(content: string): string {
+  const m = /[【[]([^】\]\n]{1,16})[】\]]/.exec(content)
+  return m ? m[1].trim() : ''
+}
+
+const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch)
+
+/**
+ * 在短信正文里定位验证码，切成 [前, 验证码, 后]，用于高亮。
+ * 只匹配两侧不是字母数字的完整串；也认「123 456」「123-456」这种分组写法。找不到返回 null（不高亮）。
+ */
+export function splitCode(content: string, code: string): [string, string, string] | null {
+  if (!code) return null
+  const patterns = [code]
+  if (/^[0-9]{6}$/.test(code)) patterns.push(`${code.slice(0, 3)} ${code.slice(3)}`, `${code.slice(0, 3)}-${code.slice(3)}`)
+  for (const pat of patterns) {
+    let from = 0
+    for (;;) {
+      const i = content.indexOf(pat, from)
+      if (i < 0) break
+      if (!isAlnum(content[i - 1]) && !isAlnum(content[i + pat.length])) {
+        return [content.slice(0, i), content.slice(i, i + pat.length), content.slice(i + pat.length)]
+      }
+      from = i + 1
+    }
+  }
+  return null
+}

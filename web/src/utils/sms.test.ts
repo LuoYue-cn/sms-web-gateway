@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkRecipient, excerptAround, normalizePhone, splitHighlight, simLabel } from './sms'
+import { checkRecipient, excerptAround, normalizePhone, senderTag, splitCode, splitHighlight, simLabel } from './sms'
 import { formatAgo, formatCountdown, formatDayDivider, formatRelative, formatDateTime, dayKey } from './time'
 
 describe('号码校验', () => {
@@ -73,5 +73,31 @@ describe('时间', () => {
   it('SIM 标识', () => {
     expect(simLabel(0)).toBe('SIM 1')
     expect(simLabel(null)).toBe('')
+  })
+})
+
+describe('验证码高亮', () => {
+  it('把验证码从正文里切出来', () => {
+    expect(splitCode('【京东】验证码 835261，5分钟内有效', '835261')).toEqual(['【京东】验证码 ', '835261', '，5分钟内有效'])
+  })
+  it('不会命中更长数字串的一部分', () => {
+    expect(splitCode('订单 18352610 验证码 835261', '835261')).toEqual(['订单 18352610 验证码 ', '835261', ''])
+    expect(splitCode('只有 18352610', '835261')).toBeNull()
+  })
+  it('认分组写法 123 456 / 123-456', () => {
+    expect(splitCode('Your code is 394 028.', '394028')).toEqual(['Your code is ', '394 028', '.'])
+    expect(splitCode('code 394-028', '394028')?.[1]).toBe('394-028')
+  })
+  it('空验证码、找不到时返回 null（不高亮）', () => {
+    expect(splitCode('hello', '')).toBeNull()
+    expect(splitCode('hello', '1234')).toBeNull()
+  })
+})
+
+describe('短信签名', () => {
+  it('提取【】与[]里的签名', () => {
+    expect(senderTag('【京东】验证码 1')).toBe('京东')
+    expect(senderTag('[Apple] code')).toBe('Apple')
+    expect(senderTag('没有签名')).toBe('')
   })
 })

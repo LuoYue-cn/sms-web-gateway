@@ -5,7 +5,9 @@ namespace SmsGate;
 
 use SmsGate\Controllers\AdminController;
 use SmsGate\Controllers\DeviceController;
+use SmsGate\Controllers\InsightsController;
 use SmsGate\Controllers\InstallController;
+use SmsGate\Database\Backfill;
 use SmsGate\Database\Database;
 use SmsGate\Database\Migrator;
 use SmsGate\Http\Request;
@@ -18,11 +20,14 @@ use SmsGate\Repositories\MessageRepository;
 use SmsGate\Repositories\SettingsRepository;
 use SmsGate\Repositories\TaskRepository;
 use SmsGate\Repositories\UserRepository;
+use SmsGate\Services\AiClient;
 use SmsGate\Services\AuthService;
 use SmsGate\Services\DeviceService;
 use SmsGate\Services\EventBus;
 use SmsGate\Services\InstallService;
+use SmsGate\Services\ReportService;
 use SmsGate\Services\SendService;
+use SmsGate\Services\StatsService;
 use SmsGate\Support\ApiException;
 use SmsGate\Support\Config;
 use SmsGate\Support\RateLimiter;
@@ -53,6 +58,8 @@ final class Kernel
             $this->db = new Database($this->config->dbPath());
             // Idempotent; lets an upgraded image apply new migrations on first request.
             (new Migrator($this->db, $this->config->migrationsDir))->migrate();
+            // 升级后给历史短信补验证码（有上限，剩余的下次请求继续）；无待处理行时只是一次索引探测
+            Backfill::codes($this->db);
         }
         return $this->db;
     }
@@ -161,6 +168,19 @@ final class Kernel
         $r->add('GET', '/audit-logs', fn($q, $p) => $a()->auditLogs($q), 'admin');
         $r->add('GET', '/events', fn($q, $p) => $a()->events($q), 'admin');
 
+        $i = fn() => $this->insights();
+        $r->add('GET', '/codes/recent', fn($q, $p) => $i()->recentCodes($q), 'admin');
+        $r->add('GET', '/stats', fn($q, $p) => $i()->stats($q), 'admin');
+        $r->add('GET', '/stats/health', fn($q, $p) => $i()->health($q), 'admin');
+        $r->add('GET', '/ai/config', fn($q, $p) => $i()->getAi($q), 'admin');
+        $r->add('PUT', '/ai/config', fn($q, $p) => $i()->putAi($q), 'admin');
+        $r->add('POST', '/ai/test', fn($q, $p) => $i()->testAi($q), 'admin');
+        $r->add('POST', '/ai/preview', fn($q, $p) => $i()->previewAi($q), 'admin');
+        $r->add('GET', '/reports', fn($q, $p) => $i()->listReports($q), 'admin');
+        $r->add('POST', '/reports/generate', fn($q, $p) => $i()->generate($q), 'admin');
+        $r->add('GET', '/reports/{date}', fn($q, $p) => $i()->getReport($q, $p), 'admin');
+        $r->add('DELETE', '/reports/{date}', fn($q, $p) => $i()->deleteReport($q, $p), 'admin');
+
         $d = fn() => $this->deviceCtl();
         $r->add('POST', '/device/pair', fn($q, $p) => $d()->pair($q), 'public');
         $r->add('POST', '/device/token/rotate', fn($q, $p) => $d()->rotate($q), 'device');
@@ -242,6 +262,23 @@ final class Kernel
         return $this->once('admin', fn() => new AdminController(
             $this->auth(), $this->devices(), $this->messages(), $this->settings(), $this->audit(), $this->events(), $this->bus(),
             new SendService($this->db(), $this->tasks(), $this->messages(), $this->devices(), $this->settings(), $this->audit(), $this->limiter(), $this->bus())
+        ));
+    }
+
+    public function stats(): StatsService
+    {
+        return $this->once('stats', fn() => new StatsService($this->db(), $this->settings()));
+    }
+
+    public function reports(): ReportService
+    {
+        return $this->once('reports', fn() => new ReportService($this->db(), $this->settings(), $this->stats(), new AiClient($this->settings())));
+    }
+
+    private function insights(): InsightsController
+    {
+        return $this->once('insights', fn() => new InsightsController(
+            $this->db(), $this->settings(), $this->audit(), $this->stats(), $this->reports(), new AiClient($this->settings()), $this->limiter()
         ));
     }
 

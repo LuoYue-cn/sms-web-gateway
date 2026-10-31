@@ -89,8 +89,10 @@
 ```json
 {"id": 5, "device_id": 1, "device_name": "Redmi K40", "phone_number": "13800138000",
  "contact_name": "张三", "last_message": "你好", "last_message_at": 1760000000000,
- "last_direction": "incoming", "unread_count": 2, "has_failed": false, "pinned": false}
+ "last_direction": "incoming", "unread_count": 2, "has_failed": false, "pinned": false,
+ "last_code": "835261"}
 ```
+`last_code`：最后一条消息是收到的短信且识别出验证码时为该验证码，否则 `null`。
 
 **Message**
 ```json
@@ -98,8 +100,10 @@
  "contact_name": "张三", "content": "你好", "direction": "incoming|outgoing",
  "timestamp": 1760000000000,
  "status": "received|queued|claimed|sending|sent|delivered|failed|unknown",
- "sim_slot": 0, "task_id": null, "error_message": null, "read": true}
+ "sim_slot": 0, "task_id": null, "error_message": null, "read": true,
+ "code": "835261", "category": "verification"}
 ```
+`code`：服务端从**收到的**短信里识别出的验证码，没有为 `null`（发出的短信永远是 `null`）。`category`：`verification|bank|logistics|carrier|marketing|other`（收到的短信才有，由内容规则归类；不是 AI 判断）。
 接收的短信 `status = "received"`。`sent` 不代表对方已收到；`delivered` 仅在运营商支持回执时出现。
 
 **POST /messages/send**
@@ -117,6 +121,37 @@ Body：`{device_id, recipient, content, sim_slot?: int, confirm_warnings?: bool}
  "created_at": 0, "claimed_at": null, "completed_at": null, "resolved_action": null}
 ```
 
+### 验证码
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/codes/recent` | Query: `minutes`(10，≤1440)、`limit`(20，≤100)。→ `{items:[{message_id, conversation_id, code, timestamp, source, device_name}], minutes}`，新的在前。`source` 是短信签名（如「京东」），没有则是联系人名或号码 |
+
+识别规则（`server/src/Support/VerificationCode.php`）：必须出现「验证码 / 动态码 / code / OTP」等关键词，取其附近的 4–8 位数字（中文短信也认字母数字混合），并排除金额、日期、时间、小数、尾号、电话、订单号。入库时识别一次；升级时历史短信由 `bin/backfill_codes.php` 回填（服务端第一次请求也会自动分批做）。
+
+### 统计
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/stats` | Query: `range`=`today|7d|30d|90d|custom`（默认 `7d`）、`from`/`to`（`custom` 时必填，`YYYY-MM-DD`，最多 366 天）、`device_id`。日期按站点时区的自然日 |
+| GET | `/stats/health` | Query: `device_id`。最近 48 小时每小时的平均电量与在线率（心跳数 ÷ 应有心跳数；心跳只保留 7 天） |
+
+`/stats` 返回：`range`（含时区与上一周期的起止）、`overview.current|previous`（`incoming/outgoing/codes/senders`）、`daily[]`、`heatmap`（7×24，周一在前，仅收到的短信）、`categories`、`devices[]`（按设备与 SIM 卡槽）、`send_quality`（各状态数、`success_rate`、失败/未知原因分布）、`top_senders[]`（有联系人名用名字，否则号码中间打码，**不返回完整号码**）。
+
+### AI 日报
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/ai/config` | → `{ai_enabled, ai_base_url, ai_model, ai_detail_level(0-2), key_set, key_source:"env|db|none"}`。**不返回 API Key** |
+| PUT | `/ai/config` | 任意子集：`ai_enabled`、`ai_base_url`（`http(s)://…/v1`）、`ai_model`、`ai_detail_level`、`ai_api_key`（只写；留空=不变）、`clear_api_key:true`。审计只记录改了哪些键，不记录值 |
+| POST | `/ai/test` | 用当前配置发一个最小请求 → `{ok, message, model?, reply?}`（失败也是 200，`ok:false` + 原因）。限频 6 次/分钟 |
+| POST | `/ai/preview` | `{date?}` → `{date, detail_level, messages:[{role,content}], chars}`：**将要发给 AI 的完整消息**（只读取并脱敏，不联网） |
+| GET | `/reports` | → `{items:[Report]}`，日期倒序 |
+| GET | `/reports/{date}` | → `Report`；不存在 `404` |
+| POST | `/reports/generate` | `{date?, use_ai?: true}`。立刻返回 `202` + 状态为 `running` 的 `Report`，响应发出后在同一个 PHP 进程里继续生成；前端轮询 `GET /reports/{date}`。同一天重新生成会覆盖。限频 10 次/分钟 |
+| DELETE | `/reports/{date}` | 删除 |
+
+**Report**：`{date, status:"running|done|failed", source:"ai|rules", model, detail_level, content:{summary, highlights[], anomalies[], suggestions[], facts}, error, prompt_tokens, completion_tokens, created_at, updated_at}`。`facts` 是当天的数字摘要（不含号码、正文、验证码）。AI 不可用或返回无法解析的内容时自动回退为规则模板（`source:"rules"`，`error` 说明原因）；`running` 超过 5 分钟视为失败。
+
+发给 AI 的内容按 `ai_detail_level` 分三档，**任何档位都不发短信原文、完整号码、联系人姓名和验证码**：`0` 只有聚合数字；`1` 加发件来源（短信签名或打码号码）和类别计数；`2` 再加脱敏后的正文摘要（最多 40 条 × 90 字，验证码短信不带正文）。
+
 ### 设置 / 审计 / 紧急暂停
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -125,7 +160,7 @@ Body：`{device_id, recipient, content, sim_slot?: int, confirm_warnings?: bool}
 | POST | `/settings/emergency-pause` | `{paused: bool}` 紧急暂停所有发送（设备 poll 将不再收到任务，已 claimed 未发送的任务保持，设备端发送前复查）。写审计日志 |
 | GET | `/audit-logs` | Query: `page`、`page_size`、`action`、`device_id` → `{items:[{id, ts, actor_type:"admin|device|system", actor, action, target, detail, ip}], total}` |
 
-审计的 `action` 包括：`login`、`login_failed`、`logout`、`password_change`、`send_message`、`resolve_task`、`device_pair`、`device_revoke`、`device_token_rotate`、`emergency_pause`、`settings_update`、`root_op`（设备上报的 Root 操作摘要）。
+审计的 `action` 包括：`login`、`login_failed`、`logout`、`password_change`、`send_message`、`resolve_task`、`device_pair`、`device_revoke`、`device_token_rotate`、`emergency_pause`、`settings_update`、`ai_config_update`、`report_generate`、`report_delete`、`root_op`（设备上报的 Root 操作摘要）。
 
 ### 实时事件（SSE）
 `GET /events`，Session 认证，`Content-Type: text/event-stream`。支持 `Last-Event-ID`（断线续传）。每 ≤15 秒发一次注释心跳 `: ping`。单个连接最长 ~55 秒后服务端正常结束，浏览器 `EventSource` 会自动重连并带 `Last-Event-ID`。

@@ -100,8 +100,13 @@ server { listen 80; server_name sms.example.com; return 301 https://$host$reques
 |---|---|
 | 查看日志 | `docker compose logs -f php nginx` |
 | 重置安装（**删除全部数据**，会先备份） | `docker compose exec php php bin/reset.php --yes` |
-| 升级 | `git pull && docker compose up -d --build` |
+| 升级 | `git pull && docker compose up -d --build`（数据库迁移自动执行；历史短信的验证码会在第一次请求时自动回填） |
+| 手动生成 AI 日报 | `docker compose exec php php bin/daily_report.php [YYYY-MM-DD] [--no-ai]` |
+| 定时生成 AI 日报 | 宿主机 crontab：`0 8 * * * cd /path/to/repo && docker compose exec -T php php bin/daily_report.php` |
+| 重扫历史验证码 | `docker compose exec php php bin/backfill_codes.php --all` |
 | 停止 | `docker compose down`（保留数据） |
+
+> AI 日报需要 PHP 容器能访问你填写的 AI 服务地址（使用宿主机上的 Ollama 时，地址写 `http://host.docker.internal:11434/v1`，并在 compose 里给 `php` 服务加 `extra_hosts: ["host.docker.internal:host-gateway"]`）。API Key 可以通过环境变量 `SMSGATE_AI_API_KEY` 传给 `php` 服务而不写进数据库。
 
 ## 6. 容量与调优
 

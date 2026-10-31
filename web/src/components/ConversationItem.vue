@@ -4,6 +4,7 @@ import { NBadge, NIcon, NTag } from 'naive-ui'
 import { AlertCircle, PinSharp } from '@vicons/ionicons5'
 import type { Conversation } from '@/api'
 import Avatar from './Avatar.vue'
+import CopyCodeButton from './CopyCodeButton.vue'
 import { displayName } from '@/utils/sms'
 import { formatRelative } from '@/utils/time'
 
@@ -11,6 +12,10 @@ const props = defineProps<{ conv: Conversation; active: boolean; tz: string; now
 const emit = defineEmits<{ (e: 'select'): void; (e: 'menu', ev: MouseEvent): void }>()
 
 const name = computed(() => displayName(props.conv))
+/** 只在最后一条是收到的短信、且 30 分钟内才在列表里放复制按钮（更早的验证码早已失效，只会添乱） */
+const showCode = computed(
+  () => !!props.conv.last_code && props.conv.last_direction === 'incoming' && props.now - props.conv.last_message_at < 30 * 60_000,
+)
 const sub = computed(() => (props.conv.contact_name?.trim() ? props.conv.phone_number : ''))
 const prefix = computed(() => (props.conv.last_direction === 'outgoing' ? '我：' : ''))
 </script>
@@ -42,6 +47,7 @@ const prefix = computed(() => (props.conv.last_direction === 'outgoing' ? '我�
           <n-icon v-if="conv.has_failed" :component="AlertCircle" class="fail" size="14" title="有发送失败的短信" />
           {{ prefix }}{{ conv.last_message }}
         </span>
+        <copy-code-button v-if="showCode" :code="conv.last_code!" compact class="code-chip" />
         <n-tag v-if="showDevice" size="tiny" round :bordered="false" class="dev">{{ conv.device_name }}</n-tag>
       </div>
     </div>
@@ -129,6 +135,9 @@ const prefix = computed(() => (props.conv.last_direction === 'outgoing' ? '我�
   color: var(--danger);
   vertical-align: -2px;
   margin-right: 2px;
+}
+.code-chip {
+  flex: none;
 }
 .dev {
   max-width: 90px;

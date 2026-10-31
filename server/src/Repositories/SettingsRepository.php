@@ -18,6 +18,12 @@ final class SettingsRepository
         'home_country_code' => '+86',
         'heartbeat_interval_s' => '30',
         'poll_wait_s' => '20',
+        // AI 日报：不进 all()（那是公开给前端的通用设置），由 /ai/config 单独读写；api_key 只写不读
+        'ai_enabled' => '0',
+        'ai_base_url' => '',
+        'ai_model' => '',
+        'ai_api_key' => '',
+        'ai_detail_level' => '2',
     ];
 
     /** @var array<string,string>|null */

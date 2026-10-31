@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { NAlert, NButton, NForm, NFormItem, NIcon, NInput, NInputNumber, NSelect, NSwitch, useDialog } from 'naive-ui'
 import { DownloadOutline, WarningOutline } from '@vicons/ionicons5'
+import AiSettingsCard from '@/components/AiSettingsCard.vue'
 import AuditLogPanel from '@/components/AuditLogPanel.vue'
 import { ApiError, authApi, exportApi } from '@/api'
 import type { Settings } from '@/api'
@@ -62,9 +63,9 @@ onMounted(async () => {
     notify.fromError(e, '加载设置失败')
   }
   fillForm()
-  if (route.hash === '#password') {
+  if (route.hash === '#password' || route.hash === '#ai') {
     await nextTick()
-    document.getElementById('password')?.scrollIntoView({ behavior: 'smooth' })
+    document.getElementById(route.hash.slice(1))?.scrollIntoView({ behavior: 'smooth' })
   }
 })
 // 其它端修改设置（settings.update 事件）且本地未编辑时同步
@@ -220,6 +221,8 @@ async function doExport(format: 'csv' | 'json'): Promise<void> {
           <n-button type="primary" :loading="saving" :disabled="!dirty" @click="save">保存设置</n-button>
         </div>
       </section>
+
+      <ai-settings-card />
 
       <section id="password" class="card sec">
         <h3>修改管理员密码</h3>

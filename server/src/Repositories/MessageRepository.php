@@ -6,6 +6,8 @@ namespace SmsGate\Repositories;
 use SmsGate\Database\Database;
 use SmsGate\Support\Clock;
 use SmsGate\Support\PhoneNumber;
+use SmsGate\Support\SmsClassifier;
+use SmsGate\Support\VerificationCode;
 
 /** Conversations and messages: storage, de-duplication, merging and presentation. */
 final class MessageRepository
@@ -39,16 +41,16 @@ final class MessageRepository
     /** Recompute the denormalised summary columns from the messages table. */
     public function refreshConversation(int $id): void
     {
-        $last = $this->db->one('SELECT content, timestamp, direction FROM messages WHERE conversation_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1', [$id]);
+        $last = $this->db->one('SELECT content, timestamp, direction, code FROM messages WHERE conversation_id = ? ORDER BY timestamp DESC, id DESC LIMIT 1', [$id]);
         $unread = (int) $this->db->value("SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND direction = 'incoming' AND is_read = 0", [$id]);
         $failed = (int) $this->db->value("SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND direction = 'outgoing' AND status IN ('failed','unknown')", [$id]);
         $this->db->exec(
-            'UPDATE conversations SET last_message = ?, last_message_at = ?, last_direction = ?, unread_count = ?, has_failed = ? WHERE id = ?',
+            'UPDATE conversations SET last_message = ?, last_message_at = ?, last_direction = ?, unread_count = ?, has_failed = ?, last_code = ? WHERE id = ?',
             [
                 $last === null ? '' : mb_substr((string) $last['content'], 0, 200),
                 $last === null ? 0 : (int) $last['timestamp'],
                 $last === null ? 'incoming' : $last['direction'],
-                $unread, $failed > 0 ? 1 : 0, $id,
+                $unread, $failed > 0 ? 1 : 0, $last['code'] ?? null, $id,
             ]
         );
     }
@@ -300,11 +302,14 @@ final class MessageRepository
      */
     private function insertMessage(int $deviceId, int $conv, array $m, string $address, int $read, ?int $androidId, ?string $sourceKey): array
     {
-        $status = $m['direction'] === 'incoming' ? 'received' : 'sent';
+        $incoming = $m['direction'] === 'incoming';
+        $status = $incoming ? 'received' : 'sent';
+        $code = $incoming ? VerificationCode::extract((string) $m['content']) : null;
+        $category = $incoming ? SmsClassifier::category((string) $m['content'], $code) : null;
         $this->db->exec(
-            'INSERT INTO messages (device_id, conversation_id, source_type, android_sms_id, source_key, phone_number, contact_name, content, direction, timestamp, status, sim_slot, is_read, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [$deviceId, $conv, $m['source_type'], $androidId, $sourceKey, $address, $m['contact_name'], $m['content'], $m['direction'], $m['timestamp'], $status, $m['sim_slot'], $read, Clock::nowMs()]
+            'INSERT INTO messages (device_id, conversation_id, source_type, android_sms_id, source_key, phone_number, contact_name, content, direction, timestamp, status, sim_slot, is_read, created_at, code, category, code_ver)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [$deviceId, $conv, $m['source_type'], $androidId, $sourceKey, $address, $m['contact_name'], $m['content'], $m['direction'], $m['timestamp'], $status, $m['sim_slot'], $read, Clock::nowMs(), $code, $category, VerificationCode::VERSION]
         );
         return ['result' => 'inserted', 'id' => $this->db->lastId(), 'conversation_id' => $conv];
     }
@@ -349,6 +354,7 @@ final class MessageRepository
             'unread_count' => (int) $r['unread_count'],
             'has_failed' => (bool) $r['has_failed'],
             'pinned' => (bool) $r['pinned'],
+            'last_code' => $r['last_code'] ?? null,
         ];
     }
 
@@ -369,6 +375,8 @@ final class MessageRepository
             'task_id' => $r['task_id'],
             'error_message' => $r['error_message'],
             'read' => (bool) $r['is_read'],
+            'code' => $r['code'] ?? null,
+            'category' => $r['category'] ?? null,
         ];
     }
 

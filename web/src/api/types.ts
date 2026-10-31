@@ -118,7 +118,11 @@ export interface Conversation {
   unread_count: number
   has_failed: boolean
   pinned: boolean
+  /** 最后一条短信里识别出的验证码（仅当最后一条是收到的短信） */
+  last_code?: string | null
 }
+
+export type SmsCategory = 'verification' | 'bank' | 'logistics' | 'carrier' | 'marketing' | 'other'
 
 export interface Message {
   id: number
@@ -134,6 +138,9 @@ export interface Message {
   task_id: string | null
   error_message: string | null
   read: boolean
+  /** 服务端从收到的短信里识别出的验证码；没有则为 null */
+  code?: string | null
+  category?: SmsCategory | null
 }
 
 /** /messages/search 的结果：Message + conversation 信息（具体字段 API.md 未列出，全部可选） */
@@ -233,3 +240,127 @@ export interface EvSyncProgress {
   sync_synced: number
 }
 export type EvSettingsUpdate = Partial<Settings>
+
+// ---------- 验证码 / 统计 / AI 日报 ----------
+export interface RecentCode {
+  message_id: number
+  conversation_id: number
+  code: string
+  timestamp: number
+  /** 短信签名（如「京东」），没有则是联系人名或号码 */
+  source: string
+  device_name: string
+}
+
+export type StatsRange = 'today' | '7d' | '30d' | '90d' | 'custom'
+
+export interface StatsTotals {
+  incoming: number
+  outgoing: number
+  codes: number
+  senders: number
+}
+export interface StatsDay {
+  date: string
+  incoming: number
+  outgoing: number
+  codes: number
+}
+export interface StatsDeviceRow {
+  device_id: number
+  device_name: string
+  sim_slot: number | null
+  incoming: number
+  outgoing: number
+  codes: number
+}
+export interface SendQuality {
+  statuses: Record<TaskStatus, number>
+  total: number
+  /** 已有结果的任务中成功（已发送 + 已送达）的百分比；没有任务时为 null */
+  success_rate: number | null
+  errors: { code: string; status: string; count: number }[]
+}
+export interface StatsReport {
+  range: { from: string; to: string; days: number; timezone: string; prev_from: string; prev_to: string }
+  overview: { current: StatsTotals; previous: StatsTotals }
+  daily: StatsDay[]
+  /** 7 行（周一在前）× 24 列（小时），收到的短信数 */
+  heatmap: number[][]
+  categories: Record<SmsCategory, number>
+  devices: StatsDeviceRow[]
+  send_quality: SendQuality
+  top_senders: { label: string; count: number; codes: number }[]
+}
+export interface HealthPoint {
+  t: number
+  battery: number | null
+  online_pct: number
+  charging: boolean
+}
+export interface HealthReport {
+  hours: number
+  devices: { device_id: number; device_name: string; points: HealthPoint[]; uptime_24h: number | null }[]
+}
+
+export type AiDetailLevel = 0 | 1 | 2
+export interface AiConfig {
+  ai_enabled: boolean
+  ai_base_url: string
+  ai_model: string
+  ai_detail_level: AiDetailLevel
+  key_set: boolean
+  key_source: 'env' | 'db' | 'none'
+}
+export interface AiConfigPatch {
+  ai_enabled?: boolean
+  ai_base_url?: string
+  ai_model?: string
+  ai_detail_level?: AiDetailLevel
+  /** 只写不读；留空表示保持原值 */
+  ai_api_key?: string
+  clear_api_key?: boolean
+}
+export interface AiTestResult {
+  ok: boolean
+  message: string
+  model?: string
+  reply?: string
+}
+export interface AiPreview {
+  date: string
+  detail_level: AiDetailLevel
+  messages: { role: string; content: string }[]
+  chars: number
+}
+
+export interface ReportFacts {
+  current: StatsTotals
+  previous: StatsTotals
+  categories: Record<SmsCategory, number>
+  send: { total: number; statuses: Record<TaskStatus, number>; success_rate: number | null }
+  hourly: number[]
+  peak_hour: number | null
+  devices: number
+  avg_uptime: number | null
+}
+export interface ReportContent {
+  summary?: string
+  highlights?: string[]
+  anomalies?: string[]
+  suggestions?: string[]
+  facts?: ReportFacts
+}
+export interface Report {
+  date: string
+  status: 'running' | 'done' | 'failed'
+  source: 'ai' | 'rules'
+  model: string
+  detail_level: AiDetailLevel
+  content: ReportContent
+  error: string
+  prompt_tokens: number
+  completion_tokens: number
+  created_at: number
+  updated_at: number
+}

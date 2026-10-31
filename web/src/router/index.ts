@@ -21,6 +21,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'c/:id(\\d+)', name: 'chat', component: () => import('@/views/MessagesView.vue'), meta: { title: '短信' } },
       { path: 'devices', name: 'devices', component: () => import('@/views/DevicesView.vue'), meta: { title: '设备管理' } },
       { path: 'settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: '设置' } },
+      { path: 'stats', name: 'stats', component: () => import('@/views/StatsView.vue'), meta: { title: '统计' } },
+      { path: 'reports', name: 'reports', component: () => import('@/views/ReportsView.vue'), meta: { title: 'AI 日报' } },
       { path: 'search', name: 'search', component: () => import('@/views/SearchView.vue'), meta: { title: '搜索' } },
     ],
   },

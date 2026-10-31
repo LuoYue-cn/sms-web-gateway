@@ -861,5 +861,373 @@ class TestSimNumbers(Base):
         self.assertFalse(any("13955556666" in json.dumps(l) for l in logs))
 
 
+class FakeAI:
+    """A throw-away OpenAI-compatible server. Records every request so tests can inspect exactly what was sent."""
+
+    def __init__(self, reply=None, status=200):
+        import http.server
+        outer = self
+        self.requests = []
+        self.reply = reply
+        self.status = status
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n) or b"{}")
+                outer.requests.append({"path": self.path, "auth": self.headers.get("Authorization"), "body": body})
+                if outer.status != 200:
+                    out, code = json.dumps({"error": {"message": "nope"}}).encode(), outer.status
+                else:
+                    content = outer.reply if outer.reply is not None else json.dumps(
+                        {"summary": "今天一切正常。", "highlights": ["收到若干短信"], "anomalies": [], "suggestions": []}, ensure_ascii=False)
+                    out = json.dumps({"model": "fake-1", "choices": [{"message": {"content": content}}],
+                                      "usage": {"prompt_tokens": 11, "completion_tokens": 7}}, ensure_ascii=False).encode()
+                    code = 200
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.srv.shutdown()
+
+
+NOW_MS = lambda: int(time.time() * 1000)
+
+
+class TestCodes(Base):
+    def _sync(self, dev, items):
+        out = []
+        base = NOW_MS() - 60_000
+        for i, (text, who) in enumerate(items):
+            out.append(self.msg(self.__class__.__dict__.get("_n", 0) + i + 1, content=text, phone_number=who, timestamp=base + i * 1000))
+        TestCodes._n = self.__class__.__dict__.get("_n", 0) + len(items)
+        self.sync(dev, out)
+
+    def test_code_extracted_and_exposed(self):
+        dev = self.new_device("codes-a")
+        self._sync(dev, [("【京东】验证码 835261，5分钟内有效。", "95118"), ("【中国移动】话费余额 1234 元", "10086"), ("晚上吃饭吗", "+8613900139000")])
+        convs = self.admin.ok("GET", f"/conversations?device_id={dev.device_id}")["items"]
+        by = {c["phone_number"]: c for c in convs}
+        self.assertEqual(by["95118"]["last_code"], "835261")
+        self.assertIsNone(by["10086"]["last_code"])
+        msgs = self.admin.ok("GET", f"/conversations/{by['95118']['id']}/messages")["items"]
+        self.assertEqual((msgs[0]["code"], msgs[0]["category"]), ("835261", "verification"))
+        other = self.admin.ok("GET", f"/conversations/{by['10086']['id']}/messages")["items"][0]
+        self.assertEqual((other["code"], other["category"]), (None, "carrier"))
+
+    def test_recent_codes_endpoint(self):
+        dev = self.new_device("codes-b")
+        self._sync(dev, [("【美团】动态码 7719，请勿告诉他人", "106900")])
+        items = self.admin.ok("GET", "/codes/recent?minutes=30")["items"]
+        mine = [x for x in items if x["code"] == "7719"]
+        self.assertEqual(len(mine), 1)
+        self.assertEqual(mine[0]["source"], "美团")
+        self.assertEqual(mine[0]["device_name"], "codes-b")
+        self.assertEqual(self.admin.ok("GET", "/codes/recent?minutes=1&limit=1")["minutes"], 1)
+
+    def test_outgoing_never_gets_a_code(self):
+        dev = self.new_device("codes-c")
+        self.sync(dev, [self.msg(1, content="验证码 123456", direction="outgoing")])
+        m = self.admin.ok("GET", "/messages?device_id=%d&direction=outgoing" % dev.device_id)["items"][0]
+        self.assertIsNone(m["code"])
+
+    def test_requires_admin(self):
+        Client(self.base).err("GET", "/codes/recent", None, 401)
+
+    def test_code_not_in_audit_logs(self):
+        dev = self.new_device("codes-d")
+        self._sync(dev, [("验证码 604392 请勿泄露", "10690")])
+        logs = json.dumps(self.admin.ok("GET", "/audit-logs?page_size=200")["items"])
+        self.assertNotIn("604392", logs)
+
+    def test_backfill_script_reprocesses_old_rows(self):
+        """A DB created before migration 003 (rows with code_ver=0) is filled in by the CLI backfill."""
+        import sqlite3
+        dev = self.new_device("codes-e")
+        self._sync(dev, [("【腾讯云】验证码：908172，15分钟内有效", "10690111")])
+        db = sqlite3.connect(os.path.join(self.data_dir, "sms_gateway.sqlite"), timeout=10)
+        db.execute("UPDATE messages SET code = NULL, category = NULL, code_ver = 0 WHERE content LIKE '%908172%'")
+        db.execute("UPDATE conversations SET last_code = NULL WHERE phone_number = '10690111'")
+        db.commit()
+        db.close()
+        r = subprocess.run(["php", os.path.join(ROOT, "bin", "backfill_codes.php")], env=dict(os.environ, SMSGATE_DATA_DIR=self.data_dir),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        conv = next(c for c in self.admin.ok("GET", f"/conversations?device_id={dev.device_id}")["items"] if c["phone_number"] == "10690111")
+        self.assertEqual(conv["last_code"], "908172")
+
+
+class TestStats(Base):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.admin.ok("PUT", "/settings", {"timezone": "Asia/Shanghai"})
+        cls.dev = cls.new_device("stats-a")
+        now = NOW_MS()
+        msgs = [
+            cls.msg(1, content="【京东】验证码 835261", phone_number="95118", timestamp=now - 5000),
+            cls.msg(2, content="【京东】验证码 111222", phone_number="95118", timestamp=now - 4000),
+            cls.msg(3, content="【顺丰】您的快递已签收", phone_number="95338", timestamp=now - 3000),
+            cls.msg(4, content="【中国银行】尾号1234账户支出 5000 元", phone_number="13800138000", timestamp=now - 2000),
+            cls.msg(5, content="old", phone_number="95118", timestamp=now - 3 * 86400_000),
+        ]
+        cls.sync(cls, cls.dev, msgs)
+
+    def test_overview_and_daily(self):
+        d = self.admin.ok("GET", f"/stats?range=7d&device_id={self.dev.device_id}")
+        cur = d["overview"]["current"]
+        self.assertEqual((cur["incoming"], cur["codes"]), (5, 2))
+        self.assertEqual(d["range"]["days"], 7)
+        self.assertEqual(d["range"]["timezone"], "Asia/Shanghai")
+        self.assertEqual(len(d["daily"]), 7)
+        self.assertEqual(sum(x["incoming"] for x in d["daily"]), 5)
+        self.assertEqual(d["categories"]["verification"], 2)
+        self.assertEqual(d["categories"]["logistics"], 1)
+        self.assertEqual(d["categories"]["bank"], 1)
+
+    def test_today_range_excludes_old(self):
+        d = self.admin.ok("GET", f"/stats?range=today&device_id={self.dev.device_id}")
+        self.assertEqual(d["overview"]["current"]["incoming"], 4)
+        self.assertEqual(len(d["daily"]), 1)
+
+    def test_heatmap_shape_and_total(self):
+        d = self.admin.ok("GET", f"/stats?range=7d&device_id={self.dev.device_id}")
+        self.assertEqual((len(d["heatmap"]), len(d["heatmap"][0])), (7, 24))
+        self.assertEqual(sum(map(sum, d["heatmap"])), 5)
+
+    def test_top_senders_are_masked(self):
+        d = self.admin.ok("GET", f"/stats?range=7d&device_id={self.dev.device_id}")
+        labels = [s["label"] for s in d["top_senders"]]
+        self.assertEqual(labels[0], "95118")
+        self.assertIn("138****8000", labels)
+        self.assertNotIn("13800138000", json.dumps(d))
+
+    def test_custom_range_validation(self):
+        self.admin.err("GET", "/stats?range=custom&from=2024-01-01", None, 400, "invalid_request")
+        self.admin.err("GET", "/stats?range=custom&from=2024-02-30&to=2024-03-01", None, 400, "invalid_request")
+        self.admin.err("GET", "/stats?range=custom&from=2024-03-02&to=2024-03-01", None, 400, "invalid_request")
+        self.admin.err("GET", "/stats?range=custom&from=2020-01-01&to=2024-03-01", None, 400, "invalid_request")
+        self.admin.err("GET", "/stats?range=bogus", None, 400, "invalid_request")
+        ok = self.admin.ok("GET", "/stats?range=custom&from=2024-03-01&to=2024-03-03")
+        self.assertEqual(ok["range"]["days"], 3)
+
+    def test_send_quality(self):
+        c = self.new_device("stats-b")
+        self.admin.ok("POST", "/messages/send", {"device_id": c.device_id, "recipient": "13900139000", "content": "hi"}, expect=201)
+        q = self.admin.ok("GET", f"/stats?range=today&device_id={c.device_id}")["send_quality"]
+        self.assertEqual((q["total"], q["statuses"]["queued"]), (1, 1))
+        self.assertIsNone(q["success_rate"])
+
+    def test_health(self):
+        c = self.new_device("stats-c")
+        c.ok("POST", "/device/heartbeat", {"battery_level": 77, "charging": False})
+        h = self.admin.ok("GET", f"/stats/health?device_id={c.device_id}")
+        self.assertEqual(len(h["devices"]), 1)
+        pts = h["devices"][0]["points"]
+        self.assertTrue(pts)
+        self.assertEqual(pts[-1]["battery"], 77)
+
+    def test_requires_admin(self):
+        Client(self.base).err("GET", "/stats", None, 401)
+        self.new_device("stats-d").err("GET", "/stats", None, 401)
+
+
+class TestAiReports(Base):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.ai = FakeAI()
+        cls.dev = cls.new_device("ai-a")
+        now = NOW_MS()
+        cls.sync(cls, cls.dev, [
+            cls.msg(1, content="【中国银行】尾号1234账户支出 5000.00元，余额 12345.67 元，电话13812345678", phone_number="95566", timestamp=now - 3000),
+            cls.msg(2, content="【京东】验证码 835261，5分钟内有效", phone_number="95118", timestamp=now - 2000),
+            cls.msg(3, content="张三的取件码 5-3-1042，订单 SF1234567890", phone_number="13700137000", timestamp=now - 1000),
+        ])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ai.close()
+        super().tearDownClass()
+
+    def _configure(self, **kw):
+        body = {"ai_enabled": True, "ai_base_url": self.ai.url, "ai_model": "fake-1", "ai_api_key": "sk-test-SECRET-123", "ai_detail_level": 2}
+        body.update(kw)
+        return self.admin.ok("PUT", "/ai/config", body)
+
+    def _wait(self, date, want="done", timeout=30):
+        end = time.time() + timeout
+        while time.time() < end:
+            r = self.admin.ok("GET", f"/reports/{date}")
+            if r["status"] == want:
+                return r
+            time.sleep(0.3)
+        self.fail(f"report not {want}: {r}")
+
+    def _today(self):
+        return self.admin.ok("GET", "/stats?range=today")["range"]["to"]
+
+    def test_key_is_write_only(self):
+        c = self._configure()
+        self.assertTrue(c["key_set"])
+        self.assertNotIn("api_key", json.dumps(self.admin.ok("GET", "/ai/config")).replace("key_set", "").replace("clear_api_key", ""))
+        self.assertNotIn("SECRET", json.dumps(self.admin.ok("GET", "/ai/config")))
+        self.assertNotIn("SECRET", json.dumps(self.admin.ok("GET", "/settings")))
+        logs = json.dumps(self.admin.ok("GET", "/audit-logs?page_size=200")["items"])
+        self.assertNotIn("SECRET", logs)
+        # 留空 = 保持原值
+        self.assertTrue(self.admin.ok("PUT", "/ai/config", {"ai_model": "fake-1"})["key_set"])
+        self.assertFalse(self.admin.ok("PUT", "/ai/config", {"clear_api_key": True})["key_set"])
+        self._configure()
+
+    def test_config_validation(self):
+        self.admin.err("PUT", "/ai/config", {"ai_base_url": "ftp://x"}, 400, "invalid_request")
+        self.admin.err("PUT", "/ai/config", {"ai_detail_level": 3}, 400, "invalid_request")
+        self.admin.err("PUT", "/ai/config", {"ai_api_key": "密钥"}, 400, "invalid_request")
+
+    def test_connection_test(self):
+        self._configure()
+        r = self.admin.ok("POST", "/ai/test", {})
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.ai.requests[-1]["auth"], "Bearer sk-test-SECRET-123")
+        self.assertTrue(self.ai.requests[-1]["path"].endswith("/v1/chat/completions"))
+
+    def test_generate_uses_ai_and_never_sends_raw_text(self):
+        self._configure()
+        n0 = len(self.ai.requests)
+        date = self._today()
+        r = self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+        self.assertIn(r["status"], ("running", "done"))
+        rep = self._wait(date)
+        self.assertEqual((rep["source"], rep["model"]), ("ai", "fake-1"))
+        self.assertEqual(rep["content"]["summary"], "今天一切正常。")
+        self.assertEqual((rep["prompt_tokens"], rep["completion_tokens"]), (11, 7))
+        self.assertIn("facts", rep["content"])
+        sent = json.dumps(self.ai.requests[n0]["body"], ensure_ascii=False)
+        for secret in ["835261", "13812345678", "5000.00", "12345.67", "1234", "SF1234567890", "13700137000", "1042", "95566", "95118"]:
+            self.assertNotIn(secret, sent, f"{secret} leaked to the AI")
+        self.assertIn("京东", sent)  # level>=1 允许出现短信签名
+        self.assertNotIn("SECRET", sent)
+
+    def test_level0_sends_only_aggregates(self):
+        self._configure(ai_detail_level=0)
+        n0 = len(self.ai.requests)
+        date = self._today()
+        self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+        self._wait(date)
+        sent = json.dumps(self.ai.requests[n0]["body"], ensure_ascii=False)
+        self.assertNotIn("京东", sent)
+        self.assertNotIn("redacted_excerpts", sent)
+        self.assertNotIn("top_sources", sent)
+        self.assertIn("received_by_hour", sent)
+
+    def test_preview_matches_what_is_sent(self):
+        self._configure(ai_detail_level=2)
+        date = self._today()
+        pv = self.admin.ok("POST", "/ai/preview", {"date": date})
+        self.assertEqual(pv["detail_level"], 2)
+        text = json.dumps(pv["messages"], ensure_ascii=False)
+        self.assertIn("redacted_excerpts", text)
+        self.assertNotIn("835261", text)
+        n0 = len(self.ai.requests)
+        self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+        self._wait(date)
+        self.assertEqual(self.ai.requests[n0]["body"]["messages"], pv["messages"])
+
+    def test_ai_failure_falls_back_to_rules(self):
+        bad = FakeAI(status=401)
+        try:
+            self._configure(ai_base_url=bad.url)
+            date = self._today()
+            self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+            rep = self._wait(date)
+            self.assertEqual(rep["source"], "rules")
+            self.assertIn("AI 生成失败", rep["error"])
+            self.assertIn("API Key", rep["error"])
+            self.assertTrue(rep["content"]["summary"])
+            self.assertNotIn("SECRET", json.dumps(rep))
+            self.assertEqual(len(bad.requests), 1)  # 401 不重试
+        finally:
+            bad.close()
+            self._configure()
+
+    def test_garbage_reply_falls_back_to_rules(self):
+        junk = FakeAI(reply="我不会输出 JSON")
+        try:
+            self._configure(ai_base_url=junk.url)
+            date = self._today()
+            self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+            rep = self._wait(date)
+            self.assertEqual(rep["source"], "rules")
+            self.assertIn("JSON", rep["error"])
+        finally:
+            junk.close()
+            self._configure()
+
+    def test_fenced_json_reply_is_accepted(self):
+        fenced = FakeAI(reply='```json\n{"summary":"带围栏","highlights":["a"],"anomalies":[],"suggestions":[]}\n```')
+        try:
+            self._configure(ai_base_url=fenced.url)
+            date = self._today()
+            self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+            self.assertEqual(self._wait(date)["content"]["summary"], "带围栏")
+        finally:
+            fenced.close()
+            self._configure()
+
+    def test_rules_only_does_not_call_ai(self):
+        self._configure()
+        n0 = len(self.ai.requests)
+        date = self._today()
+        self.admin.ok("POST", "/reports/generate", {"date": date, "use_ai": False}, expect=202)
+        rep = self._wait(date)
+        self.assertEqual(rep["source"], "rules")
+        self.assertEqual(len(self.ai.requests), n0)
+
+    def test_disabled_ai_uses_rules(self):
+        self._configure(ai_enabled=False)
+        date = self._today()
+        self.admin.ok("POST", "/reports/generate", {"date": date}, expect=202)
+        self.assertEqual(self._wait(date)["source"], "rules")
+        self._configure()
+
+    def test_list_get_delete_and_validation(self):
+        date = self._today()
+        self.admin.ok("POST", "/reports/generate", {"date": date, "use_ai": False}, expect=202)
+        self._wait(date)
+        self.assertIn(date, [r["date"] for r in self.admin.ok("GET", "/reports")["items"]])
+        self.admin.err("POST", "/reports/generate", {"date": "2999-01-01"}, 400, "invalid_request")
+        self.admin.err("POST", "/reports/generate", {"date": "nope"}, 400, "invalid_request")
+        self.admin.err("GET", "/reports/1999-01-01", None, 404, "not_found")
+        self.admin.err("GET", "/reports/not-a-date", None, 404, "not_found")
+        self.admin.ok("DELETE", f"/reports/{date}")
+        self.admin.err("GET", f"/reports/{date}", None, 404, "not_found")
+
+    def test_cli_script_generates_yesterday(self):
+        self._configure()
+        r = subprocess.run(["php", os.path.join(ROOT, "bin", "daily_report.php"), "--no-ai"], env=dict(os.environ, SMSGATE_DATA_DIR=self.data_dir),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("done (rules)", r.stdout)
+
+    def test_requires_admin_and_csrf(self):
+        for m, p in [("GET", "/ai/config"), ("PUT", "/ai/config"), ("POST", "/ai/test"), ("POST", "/ai/preview"), ("GET", "/reports"), ("POST", "/reports/generate")]:
+            Client(self.base).err(m, p, {} if m != "GET" else None, 401)
+        self.new_device("ai-x").err("GET", "/reports", None, 401)
+        c = Client(self.base)
+        c.ok("POST", "/auth/login", {"username": "admin", "password": PASSWORD})
+        c.err("PUT", "/ai/config", {"ai_model": "x"}, 403, "csrf_failed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

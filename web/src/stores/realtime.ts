@@ -15,6 +15,7 @@ import { useChatStore } from './chat'
 import { useDevicesStore } from './devices'
 import { useSettingsStore } from './settings'
 import { useAuthStore } from './auth'
+import { useCodesStore } from './codes'
 import { notify } from '@/utils/notify'
 import { displayName } from '@/utils/sms'
 
@@ -70,7 +71,12 @@ export const useRealtimeStore = defineStore('realtime', () => {
     const convs = useConversationsStore()
     const chat = useChatStore()
     convs.upsert(d.conversation)
-    if (d.message.direction === 'incoming' && chat.activeId !== d.conversation.id) {
+    // 刚到的验证码（5 分钟内）：弹出带复制按钮的提示；历史同步补进来的旧短信只更新数据，不打扰
+    const fresh = d.message.code && Date.now() - d.message.timestamp < 5 * 60_000
+    const entry = useCodesStore().addFromMessage(d.message, d.conversation.device_name)
+    if (entry && fresh) {
+      notify.code(entry.source, entry.code)
+    } else if (d.message.direction === 'incoming' && chat.activeId !== d.conversation.id) {
       notify.info(`新短信：${displayName(d.conversation)}`)
     }
     chat.upsert(d.message)
@@ -117,6 +123,7 @@ export const useRealtimeStore = defineStore('realtime', () => {
       useConversationsStore().refreshHead(),
       useDevicesStore().load(),
       useSettingsStore().load(),
+      useCodesStore().load(),
     ]
     if (chat.activeId != null) tasks.push(chat.refresh())
     const results = await Promise.allSettled(tasks)

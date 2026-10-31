@@ -2,7 +2,8 @@
 import { computed } from 'vue'
 import { NButton, NTag, NTooltip } from 'naive-ui'
 import type { Message } from '@/api'
-import { simLabel, statusMeta } from '@/utils/sms'
+import CopyCodeButton from './CopyCodeButton.vue'
+import { simLabel, splitCode, statusMeta } from '@/utils/sms'
 import { formatClock, formatDateTime } from '@/utils/time'
 
 const props = defineProps<{ msg: Message; tz: string }>()
@@ -11,13 +12,16 @@ const emit = defineEmits<{ (e: 'resolve', m: Message): void }>()
 const outgoing = computed(() => props.msg.direction === 'outgoing')
 const meta = computed(() => statusMeta(props.msg.status))
 const sim = computed(() => simLabel(props.msg.sim_slot))
+/** 收到的短信里识别出验证码时，把它在气泡里高亮出来 */
+const parts = computed(() => (!outgoing.value && props.msg.code ? splitCode(props.msg.content, props.msg.code) : null))
 </script>
 
 <template>
   <div class="row" :class="outgoing ? 'out' : 'in'">
     <div class="wrap">
       <!-- 短信内容一律按文本渲染（插值会转义），不使用 v-html -->
-      <div class="bubble sms-text">{{ msg.content }}</div>
+      <div class="bubble sms-text"><template v-if="parts">{{ parts[0] }}<mark class="code">{{ parts[1] }}</mark>{{ parts[2] }}</template><template v-else>{{ msg.content }}</template></div>
+      <copy-code-button v-if="!outgoing && msg.code" :code="msg.code" class="copy-btn" />
       <div class="meta">
         <n-tooltip>
           <template #trigger>
@@ -77,6 +81,19 @@ const sim = computed(() => simLabel(props.msg.sim_slot))
   background: var(--bubble-out);
   color: var(--bubble-out-text);
   border-bottom-right-radius: 4px;
+}
+.code {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(240, 160, 32, 0.28);
+  color: inherit;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+}
+.copy-btn {
+  align-self: flex-start;
+  margin-top: 4px;
 }
 .meta {
   display: flex;

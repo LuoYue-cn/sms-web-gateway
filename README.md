@@ -70,6 +70,9 @@
 | 📤 **网页发短信** | 任务队列 + 长轮询 + `SmsManager`；中文长短信、指定 SIM 卡、国际号码；状态 `queued → claimed → sending → sent → delivered / failed / unknown` |
 | 🧷 **防重复发送** | 崩溃或自动恢复后遗留的 `sending` 任务只会标记为 `unknown`，交给管理员确认，**绝不自动重发** |
 | 💬 **会话式界面** | 按联系人聚合、搜索、置顶、未读、深色模式、手机浏览器适配、数据导出 |
+| 🔑 **验证码一键复制** | 自动识别短信里的验证码（规则参考 XposedSmsCode，宁可漏识别也不把金额/日期当验证码）；气泡里高亮 + 复制按钮，会话列表直接带复制芯片，顶栏「最近验证码」面板，新验证码到达时弹出带复制按钮的提示；局域网 http 访问也能复制 |
+| 📊 **统计面板** | 每日收发、验证码数量、短信类别、发件方 Top 10、星期×小时热力图、按设备/SIM、发送成功率与失败原因、设备电量与在线率；纯 SVG 图表，零新增依赖 |
+| 🤖 **AI 日报** | 对接任意 OpenAI 兼容接口（OpenAI / DeepSeek / 通义 / 智谱 / Ollama…）；分三档控制发什么（默认第 2 档：脱敏后的短信摘要；第 0 档只发聚合数字），默认关闭，发送前可预览完整请求；AI 不可用时自动回退为规则模板；可用宝塔计划任务每天自动生成 |
 | 📱 **多设备管理** | 在线状态、电量、网络、SIM、同步进度、待发送任务、一次性二维码绑定 |
 | 🛠️ **后台保活** | 前台服务 + WorkManager + 开机恢复；可选 Root 增强：电池白名单、分级恢复与冷却、保护状态、独立 Watchdog 模块 |
 | 🚨 **安全开关** | 紧急暂停发送、发送频率限制、国际号码 / 疑似高资费确认、完整审计日志 |
@@ -139,7 +142,8 @@ docker compose up -d --build        # 默认 http://服务器IP:8080
 | 数据库加密 | ❌ **SQLite 是明文**。请用整盘/数据卷加密，并加密备份；数据文件默认 `0640`；安装向导会检测 `data/` 是否可被网页读取，读得到就拒绝安装 |
 | 设备凭据 | 设备令牌**只存 SHA-256 哈希**；绑定令牌 5 分钟、一次性、原子消费；支持轮换与吊销 |
 | 手机端 | 令牌存 Android Keystore；release 包只信任系统 CA，不提供忽略证书错误的选项（内网自签见 [ANDROID_SETUP.md](ANDROID_SETUP.md#6-内网--自签证书怎么办)） |
-| 注入/滥用 | 预处理 SQL；短信内容按纯文本渲染；CSV 导出防公式注入 |
+| 注入/滥用 | 预处理 SQL；短信内容按纯文本渲染（AI 返回的日报同样不渲染 Markdown/HTML）；CSV 导出防公式注入 |
+| AI 数据外发 | 默认关闭；**任何档位都不发短信原文、完整号码、联系人姓名和验证码**；发送前可预览完整请求；API Key 只写不读，也可只放服务器环境变量 |
 | Root | **服务器没有任何下发 Shell 命令的接口**；Watchdog 只执行预定义检查，且**尊重用户的强制停止** |
 
 完整说明见 [SECURITY.md](SECURITY.md)。
@@ -148,7 +152,7 @@ docker compose up -d --build        # 默认 http://服务器IP:8080
 
 | 项目 | 结果 |
 |---|---|
-| 服务端集成测试 | 64 项通过（去重、幂等、状态机、令牌、CSRF、登录限流与代理信任、SSE ……） |
+| 服务端集成测试 | 99 项通过（去重、幂等、状态机、令牌、CSRF、登录限流与代理信任、SSE、验证码识别与回填、统计、AI 日报与脱敏 ……）+ 53 组验证码/归类/脱敏样例 |
 | Root Watchdog 脚本测试 | 266 项通过（dash + busybox，冷却/保护/强制停止/未解锁等场景） |
 | Android 单元测试 | 36 项通过 |
 | 并发压测（SQLite WAL） | 10 台设备同时灌 20 万条 + 管理端轮询 + SSE + 发送队列：**0 错误、0 个 `database_busy`**（详见 [DEPLOYMENT.md](DEPLOYMENT.md#6-容量与调优)） |
@@ -157,6 +161,7 @@ docker compose up -d --build        # 默认 http://服务器IP:8080
 
 ```bash
 python3 server/tests/api_test.py            # 服务端集成测试（会启动临时 PHP 服务）
+php server/tests/extractor_test.php         # 验证码识别 / 归类 / 脱敏样例
 sh root-module/tests/run_tests.sh           # Watchdog 脚本测试
 (cd web && npm install && npm test)         # 前端单元测试
 (cd android && ./gradlew testDebugUnitTest) # Android 单元测试

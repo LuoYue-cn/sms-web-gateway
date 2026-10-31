@@ -11,7 +11,15 @@ final class Response
         public readonly string $body = '',
         public array $headers = [],
         public readonly ?\Closure $stream = null,
+        /** 响应发完之后再执行的收尾工作（PHP-FPM 下先断开客户端，不占用浏览器连接） */
+        public ?\Closure $after = null,
     ) {
+    }
+
+    public function afterSend(\Closure $fn): self
+    {
+        $this->after = $fn;
+        return $this;
     }
 
     public static function json(mixed $data, int $status = 200): self
@@ -52,5 +60,17 @@ final class Response
             return;
         }
         echo $this->body;
+        if ($this->after !== null) {
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } else {
+                @flush();
+            }
+            try {
+                ($this->after)();
+            } catch (\Throwable $e) {
+                error_log('[smsgate] after-send task failed: ' . get_class($e));
+            }
+        }
     }
 }

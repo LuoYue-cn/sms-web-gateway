@@ -9,10 +9,13 @@ import {
   MoonOutline,
   PersonCircleOutline,
   PhonePortraitOutline,
+  BarChartOutline,
+  DocumentTextOutline,
   SearchOutline,
   SettingsOutline,
   SunnyOutline,
 } from '@vicons/ionicons5'
+import RecentCodes from './RecentCodes.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useDevicesStore } from '@/stores/devices'
 import { useThemeStore } from '@/stores/theme'
@@ -74,6 +77,8 @@ const userOptions = [
 /** 手机顶栏只保留最常用的入口，其余收进「更多」菜单 */
 const moreOptions = computed(() => [
   { label: '设备管理', key: 'devices' },
+  { label: '统计', key: 'stats' },
+  { label: 'AI 日报', key: 'reports' },
   { label: '设置', key: 'settings' },
   {
     label: `主题：${theme.mode === 'system' ? '跟随系统' : theme.mode === 'dark' ? '深色' : '浅色'}`,
@@ -87,7 +92,7 @@ const moreOptions = computed(() => [
 
 function onMore(key: string): void {
   if (key.startsWith('theme:')) theme.setMode(key.slice(6) as ThemeMode)
-  else if (key === 'devices') void router.push({ name: 'devices' })
+  else if (key === 'devices' || key === 'stats' || key === 'reports') void router.push({ name: key })
   else void onUser(key)
 }
 
@@ -131,6 +136,8 @@ async function onUser(key: string): Promise<void> {
       <template #icon><n-icon :component="SearchOutline" /></template>
     </n-button>
 
+    <recent-codes />
+
     <n-popover trigger="click" placement="bottom-end" :show-arrow="false" style="min-width: 240px">
       <template #trigger>
         <button class="dev-chip" :class="overview.tone" type="button" aria-label="设备状态概览">
@@ -160,6 +167,12 @@ async function onUser(key: string): Promise<void> {
         </n-button>
       </n-dropdown>
 
+      <n-button quaternary circle size="small" aria-label="统计" title="统计" @click="router.push({ name: 'stats' })">
+        <template #icon><n-icon :component="BarChartOutline" /></template>
+      </n-button>
+      <n-button quaternary circle size="small" aria-label="AI 日报" title="AI 日报" @click="router.push({ name: 'reports' })">
+        <template #icon><n-icon :component="DocumentTextOutline" /></template>
+      </n-button>
       <n-button quaternary circle size="small" aria-label="设备管理" @click="router.push({ name: 'devices' })">
         <template #icon><n-icon :component="PhonePortraitOutline" /></template>
       </n-button>
