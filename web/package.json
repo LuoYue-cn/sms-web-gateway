@@ -1,6 +1,6 @@
 {
   "name": "smsgate-web",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "SMS Web Gateway 管理前端（Vue 3 + TypeScript + Naive UI）",
